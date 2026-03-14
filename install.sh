@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 # ──────────────────────────────────────────────
@@ -24,28 +24,82 @@ echo -e "${BOLD}  ⚓  Beachhead Installer${NC}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-# ── Check prerequisites ──────────────────────
+# ── Install prerequisites ─────────────────────
 
-info "Checking prerequisites..."
+info "Checking and installing prerequisites..."
 
-if ! command -v docker &>/dev/null; then
-  fail "Docker is not installed. Install it first: https://docs.docker.com/engine/install/"
+# Detect package manager
+if command -v apt-get &>/dev/null; then
+  PKG_MGR="apt"
+elif command -v yum &>/dev/null; then
+  PKG_MGR="yum"
+elif command -v dnf &>/dev/null; then
+  PKG_MGR="dnf"
+else
+  PKG_MGR=""
 fi
-ok "Docker found: $(docker --version)"
 
-if ! docker compose version &>/dev/null; then
-  fail "Docker Compose V2 is not available. Update Docker or install the compose plugin."
-fi
-ok "Docker Compose found: $(docker compose version --short)"
+install_pkg() {
+  local pkg="$1"
+  if [[ -z "$PKG_MGR" ]]; then
+    fail "No supported package manager found (apt/yum/dnf). Install $pkg manually."
+  fi
+  info "Installing $pkg..."
+  case "$PKG_MGR" in
+    apt) sudo apt-get update -qq && sudo apt-get install -y -qq "$pkg" ;;
+    yum) sudo yum install -y -q "$pkg" ;;
+    dnf) sudo dnf install -y -q "$pkg" ;;
+  esac
+}
 
+# Git
 if ! command -v git &>/dev/null; then
-  fail "Git is not installed."
+  install_pkg git
 fi
 ok "Git found: $(git --version)"
 
+# curl (needed for Docker install and health checks)
+if ! command -v curl &>/dev/null; then
+  install_pkg curl
+fi
+
+# Docker Engine
+if ! command -v docker &>/dev/null; then
+  info "Installing Docker Engine..."
+  curl -fsSL https://get.docker.com | sudo sh
+  sudo systemctl enable --now docker
+  # Add current user to docker group so we don't need sudo for docker commands
+  if ! groups | grep -q docker; then
+    sudo usermod -aG docker "$USER"
+    warn "Added $USER to docker group. Group change takes effect on next login."
+    warn "For now, the installer will use sudo for docker commands."
+    # Re-exec with newgrp so the current script can use docker without sudo
+    DOCKER_SUDO="sudo"
+  fi
+fi
+DOCKER_SUDO="${DOCKER_SUDO:-}"
+ok "Docker found: $(docker --version)"
+
+# Docker Compose (V2 plugin)
+if ! docker compose version &>/dev/null; then
+  info "Installing Docker Compose plugin..."
+  sudo mkdir -p /usr/local/lib/docker/cli-plugins
+  COMPOSE_VERSION=$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+  COMPOSE_VERSION="${COMPOSE_VERSION:-v2.24.5}"
+  sudo curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" \
+    -o /usr/local/lib/docker/cli-plugins/docker-compose
+  sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+fi
+ok "Docker Compose found: $(docker compose version --short)"
+
 # Check Docker daemon is running
-if ! docker info &>/dev/null; then
-  fail "Docker daemon is not running. Start it and try again."
+if ! ${DOCKER_SUDO} docker info &>/dev/null; then
+  info "Starting Docker daemon..."
+  sudo systemctl start docker
+  sleep 2
+  if ! ${DOCKER_SUDO} docker info &>/dev/null; then
+    fail "Docker daemon failed to start. Check: sudo systemctl status docker"
+  fi
 fi
 ok "Docker daemon is running"
 
@@ -140,10 +194,10 @@ ok ".env written"
 # ── Create Docker network ────────────────────
 
 info "Ensuring beachhead-net Docker network exists..."
-if docker network inspect beachhead-net &>/dev/null; then
+if ${DOCKER_SUDO} docker network inspect beachhead-net &>/dev/null; then
   ok "Network beachhead-net already exists"
 else
-  docker network create beachhead-net
+  ${DOCKER_SUDO} docker network create beachhead-net
   ok "Created network beachhead-net"
 fi
 
@@ -160,7 +214,7 @@ fi
 # ── Start services ───────────────────────────
 
 info "Building and starting Beachhead..."
-docker compose up -d --build 2>&1 | tail -10
+${DOCKER_SUDO} docker compose up -d --build 2>&1 | tail -10
 
 echo ""
 
