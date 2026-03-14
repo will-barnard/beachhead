@@ -2,7 +2,7 @@
 FROM node:20-alpine AS dashboard-build
 WORKDIR /dashboard
 COPY dashboard/package*.json ./
-RUN npm ci
+RUN npm install
 COPY dashboard/ ./
 RUN npm run build
 
