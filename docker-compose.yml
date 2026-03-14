@@ -90,5 +90,4 @@ volumes:
 
 networks:
   beachhead-net:
-    name: beachhead-net
-    driver: bridge
+    external: true
