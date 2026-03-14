@@ -1,0 +1,10 @@
+# Serve ACME HTTP-01 challenge files directly from the shared html volume.
+# This must take priority over the proxy_pass to the backend so Let's Encrypt
+# can verify domain ownership without the backend intercepting the request.
+location ^~ /.well-known/acme-challenge/ {
+    auth_basic off;
+    allow all;
+    root /usr/share/nginx/html;
+    try_files $uri =404;
+    break;
+}

@@ -55,7 +55,7 @@ services:
     volumes:
       - /var/run/docker.sock:/tmp/docker.sock:ro
       - certs:/etc/nginx/certs
-      - vhost:/etc/nginx/vhost.d
+      - ./nginx/vhost.d:/etc/nginx/vhost.d
       - html:/usr/share/nginx/html
     networks:
       - beachhead-net
@@ -70,7 +70,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - certs:/etc/nginx/certs
-      - vhost:/etc/nginx/vhost.d
+      - ./nginx/vhost.d:/etc/nginx/vhost.d
       - html:/usr/share/nginx/html
       - acme:/etc/acme.sh
     depends_on:
@@ -82,7 +82,6 @@ volumes:
   pgdata:
   deployments:
   certs:
-  vhost:
   html:
   acme:
 
