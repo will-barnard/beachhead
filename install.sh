@@ -111,18 +111,22 @@ echo -e "${BOLD}Configuration${NC}"
 echo ""
 
 # Domain
-read -rp "$(echo -e "${CYAN}▸${NC}") Enter your domain name (e.g. deploy.example.com): " BEACHHEAD_DOMAIN
-if [[ -z "$BEACHHEAD_DOMAIN" ]]; then
+read -rp "$(echo -e "${CYAN}▸${NC}") Enter your root domain (e.g. example.com): " ROOT_DOMAIN
+if [[ -z "$ROOT_DOMAIN" ]]; then
   fail "Domain name is required."
 fi
 
+# Strip any leading subdomain the user may have accidentally included
+ROOT_DOMAIN="${ROOT_DOMAIN#beachhead.}"
+
 # Validate domain format (basic check)
-if ! echo "$BEACHHEAD_DOMAIN" | grep -qP '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$'; then
-  # fallback for macOS (no -P flag)
-  if ! echo "$BEACHHEAD_DOMAIN" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'; then
-    warn "Domain '${BEACHHEAD_DOMAIN}' may not be valid. Continuing anyway."
-  fi
+if ! echo "$ROOT_DOMAIN" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'; then
+  warn "Domain '${ROOT_DOMAIN}' may not be valid. Continuing anyway."
 fi
+
+# Beachhead will be served at beachhead.<root-domain>
+BEACHHEAD_DOMAIN="beachhead.${ROOT_DOMAIN}"
+info "Beachhead will be available at: https://${BEACHHEAD_DOMAIN}"
 
 # Email for LetsEncrypt
 read -rp "$(echo -e "${CYAN}▸${NC}") Email for SSL certificates (LetsEncrypt): " LETSENCRYPT_EMAIL
@@ -141,8 +145,9 @@ GITHUB_WEBHOOK_SECRET="${GITHUB_WEBHOOK_SECRET:-}"
 
 echo ""
 echo -e "${BOLD}Summary${NC}"
-echo "  Domain:    ${BEACHHEAD_DOMAIN}"
-echo "  Email:     ${LETSENCRYPT_EMAIL}"
+echo "  Root domain: ${ROOT_DOMAIN}"
+echo "  Beachhead:   https://${BEACHHEAD_DOMAIN}"
+echo "  Email:       ${LETSENCRYPT_EMAIL}"
 echo "  Webhook:   ${GITHUB_WEBHOOK_SECRET:-<not set>}"
 echo ""
 read -rp "$(echo -e "${CYAN}▸${NC}") Proceed with installation? [Y/n] " CONFIRM
