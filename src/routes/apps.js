@@ -1,7 +1,10 @@
 const { Router } = require('express');
+const path = require('path');
 const Apps = require('../models/apps');
 const Deployments = require('../models/deployments');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
+const { dockerComposeDown } = require('../services/docker');
+const config = require('../config');
 const logger = require('../logger');
 
 const router = Router();
@@ -97,8 +100,23 @@ router.put('/:id', async (req, res) => {
 // Delete app
 router.delete('/:id', async (req, res) => {
   try {
-    const app = await Apps.delete(req.params.id);
+    const app = await Apps.findById(req.params.id);
     if (!app) return res.status(404).json({ error: 'App not found' });
+
+    // Tear down containers for all deployments before removing DB records
+    const deployments = await Deployments.findByAppId(app.id, 1000);
+    for (const dep of deployments) {
+      const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${dep.id}`);
+      try {
+        await dockerComposeDown(deployDir, 'beachhead.override.yml');
+        logger.info(`Stopped containers for deploy #${dep.id} (app ${app.name})`);
+      } catch (err) {
+        // Directory may no longer exist or containers already stopped — not fatal
+        logger.warn(`Could not stop containers for deploy #${dep.id}: ${err.message}`);
+      }
+    }
+
+    await Apps.delete(app.id);
     logger.info(`App deleted: ${app.name}`);
     res.json({ message: 'App deleted', app });
   } catch (err) {
