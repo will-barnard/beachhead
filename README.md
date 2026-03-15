@@ -1,6 +1,6 @@
 # Beachhead
 
-Self-hosted deployment platform for multi-language web apps with automated CI/CD, proxy routing, SSL, environment injection, and auth integration.
+Self-hosted deployment platform for multi-language web apps with automated CI/CD, proxy routing, SSL, environment injection, and auth integration. foo
 
 ## Architecture
 
