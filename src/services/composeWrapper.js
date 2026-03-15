@@ -9,7 +9,7 @@ const logger = require('../logger');
  * This adds proxy environment variables to the public service
  * and connects it to the beachhead-net Docker network.
  */
-function generateOverride({ appSlug, publicService, domain, publicPort, envVars }) {
+function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars }) {
   if (!publicService || !domain) {
     throw new Error('publicService and domain are required for compose override');
   }
@@ -18,11 +18,14 @@ function generateOverride({ appSlug, publicService, domain, publicPort, envVars 
 
   // Slugify app name for use in container names — lowercase alphanum + dash
   const slug = (appSlug || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+  // Include deployment ID so each deploy has unique container names (avoids name conflicts
+  // when old containers are still running during the new deploy's startup phase).
+  const suffix = deployId ? `-d${deployId}` : '';
 
   const override = {
     services: {
       [publicService]: {
-        container_name: `${slug}-${publicService}`,
+        container_name: `${slug}-${publicService}${suffix}`,
         environment: [
           `VIRTUAL_HOST=${domain}`,
           `VIRTUAL_PORT=${port}`,
@@ -51,7 +54,7 @@ function generateOverride({ appSlug, publicService, domain, publicPort, envVars 
     for (const [service, vars] of Object.entries(serviceEnvs)) {
       if (!override.services[service]) {
         override.services[service] = {
-          container_name: `${slug}-${service}`,
+          container_name: `${slug}-${service}${suffix}`,
           environment: [],
         };
       }

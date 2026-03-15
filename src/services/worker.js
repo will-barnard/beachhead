@@ -67,6 +67,7 @@ async function processDeployment(deployment) {
     const envVars = await EnvVars.getByAppId(app.id);
     const overrideContent = generateOverride({
       appSlug: app.name,
+      deployId: deployment.id,
       publicService,
       domain: app.domain,
       publicPort: publicPort || 80,
