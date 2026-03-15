@@ -40,7 +40,6 @@ async function processDeployment(deployment) {
   }
 
   const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${deployment.id}`);
-  let containersStarted = false;
 
   try {
     // ── CLONING ──
@@ -106,7 +105,6 @@ async function processDeployment(deployment) {
     // ── STARTING_CONTAINERS ──
     await transition(deployment, STATES.STARTING_CONTAINERS, 'Starting containers');
     await dockerComposeUp(deployDir, 'beachhead.override.yml');
-    containersStarted = true;
 
     // ── PROXY_SETUP ──
     await transition(deployment, STATES.PROXY_SETUP, `Proxy configured for ${app.domain} -> ${publicService}:${publicPort || 80}`);
@@ -144,14 +142,13 @@ async function processDeployment(deployment) {
   } catch (err) {
     logger.error(`[deploy #${deployment.id}] Failed: ${err.message}`);
 
-    // Rollback: tear down containers if they were started
-    if (containersStarted) {
-      try {
-        logger.info(`[deploy #${deployment.id}] Rolling back — stopping containers`);
-        await dockerComposeDown(deployDir, 'beachhead.override.yml');
-      } catch (rollbackErr) {
-        logger.error(`[deploy #${deployment.id}] Rollback failed: ${rollbackErr.message}`);
-      }
+    // Rollback: always attempt compose down to clean up any partially-started containers.
+    // Even if nothing started, compose down is a no-op.
+    try {
+      logger.info(`[deploy #${deployment.id}] Rolling back — stopping containers`);
+      await dockerComposeDown(deployDir, 'beachhead.override.yml');
+    } catch (rollbackErr) {
+      logger.error(`[deploy #${deployment.id}] Rollback failed: ${rollbackErr.message}`);
     }
 
     await Deployments.updateState(deployment.id, STATES.FAILED, `[FAILED] ${err.message}`);
