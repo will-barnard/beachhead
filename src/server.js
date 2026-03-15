@@ -15,6 +15,10 @@ const webhooksRouter = require('./routes/webhooks');
 
 const app = express();
 
+// Trust the nginx-proxy reverse proxy so express-rate-limit can identify
+// real client IPs from the X-Forwarded-For header.
+app.set('trust proxy', 1);
+
 // Security
 app.use(helmet());
 
