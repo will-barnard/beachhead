@@ -23,6 +23,47 @@
       </table>
     </div>
 
+    <!-- Env Files -->
+    <div class="card">
+      <h3 style="margin-bottom:0.75rem;">Env Files</h3>
+      <p style="color:var(--muted); font-size:0.8rem; margin-bottom:0.75rem;">
+        Define .env files to write to specific paths in your repo at deploy time. Paste the full file contents — Beachhead parses and stores the values.
+      </p>
+
+      <!-- Existing files -->
+      <div v-for="ef in envFiles" :key="ef.id" class="card" style="margin-bottom:0.75rem; padding:0.75rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+          <code style="font-size:0.85rem; color:var(--accent);">{{ ef.path }}</code>
+          <div style="display:flex; gap:0.5rem;">
+            <button class="btn btn-sm" @click="toggleEditFile(ef)">{{ editingFile === ef.id ? 'Cancel' : 'Edit' }}</button>
+            <button class="btn btn-danger btn-sm" @click="removeEnvFile(ef.id)">Delete</button>
+          </div>
+        </div>
+        <div style="font-size:0.78rem; color:var(--muted);">
+          {{ ef.vars.length }} var{{ ef.vars.length !== 1 ? 's' : '' }}:
+          <span v-for="(v, i) in ef.vars" :key="v.id">{{ v.key }}<span v-if="i < ef.vars.length - 1">, </span></span>
+        </div>
+        <div v-if="editingFile === ef.id" style="margin-top:0.75rem;">
+          <textarea v-model="editFileContent" rows="10" style="width:100%; font-family:monospace; font-size:0.8rem;" placeholder="KEY=value&#10;ANOTHER_KEY=value"></textarea>
+          <button class="btn btn-sm" style="margin-top:0.5rem;" @click="saveEnvFile(ef.path, ef.id)">Save</button>
+        </div>
+      </div>
+
+      <!-- Add new file form -->
+      <div v-if="addingFile" class="card" style="margin-bottom:0.75rem; padding:0.75rem; border:1px dashed var(--border);">
+        <div style="margin-bottom:0.5rem;">
+          <input v-model="newFile.path" placeholder="relative/path/.env" style="width:100%;" />
+        </div>
+        <textarea v-model="newFile.content" rows="10" style="width:100%; font-family:monospace; font-size:0.8rem;" placeholder="KEY=value&#10;ANOTHER_KEY=value&#10;# comments are ignored"></textarea>
+        <div style="display:flex; gap:0.5rem; margin-top:0.5rem;">
+          <button class="btn btn-sm" @click="saveNewEnvFile">Save</button>
+          <button class="btn btn-sm" @click="addingFile = false">Cancel</button>
+        </div>
+      </div>
+
+      <button class="btn btn-sm" @click="addingFile = true" v-if="!addingFile" style="margin-top:0.25rem;">+ Add Env File</button>
+    </div>
+
     <!-- Environment Variables -->
     <div class="card">
       <h3 style="margin-bottom:0.75rem;">Environment Variables</h3>
@@ -73,10 +114,15 @@ export default {
     app: null,
     deployments: [],
     envVars: [],
+    envFiles: [],
     loading: true,
     error: null,
     selectedDeploy: null,
     newEnv: { key: '', value: '', target_service: '' },
+    addingFile: false,
+    newFile: { path: '', content: '' },
+    editingFile: null,
+    editFileContent: '',
   }),
   async created() {
     await this.load();
@@ -85,14 +131,16 @@ export default {
     async load() {
       try {
         const id = this.$route.params.id;
-        const [app, deployments, envVars] = await Promise.all([
+        const [app, deployments, envVars, envFiles] = await Promise.all([
           api.getApp(id),
           api.getDeployments(id),
           api.getEnvVars(id),
+          api.getEnvFiles(id),
         ]);
         this.app = app;
         this.deployments = deployments;
         this.envVars = envVars;
+        this.envFiles = envFiles;
       } catch (e) {
         this.error = e.message;
       } finally {
@@ -136,6 +184,45 @@ export default {
       try {
         await api.deleteEnvVar(this.app.id, envId);
         this.envVars = await api.getEnvVars(this.app.id);
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      }
+    },
+    toggleEditFile(ef) {
+      if (this.editingFile === ef.id) {
+        this.editingFile = null;
+        this.editFileContent = '';
+      } else {
+        this.editingFile = ef.id;
+        this.editFileContent = ef.vars.map((v) => `${v.key}=${v.value}`).join('\n');
+      }
+    },
+    async saveEnvFile(filePath, fileId) {
+      try {
+        await api.saveEnvFile(this.app.id, { path: filePath, content: this.editFileContent });
+        this.editingFile = null;
+        this.editFileContent = '';
+        this.envFiles = await api.getEnvFiles(this.app.id);
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      }
+    },
+    async saveNewEnvFile() {
+      if (!this.newFile.path) return;
+      try {
+        await api.saveEnvFile(this.app.id, { path: this.newFile.path, content: this.newFile.content });
+        this.newFile = { path: '', content: '' };
+        this.addingFile = false;
+        this.envFiles = await api.getEnvFiles(this.app.id);
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      }
+    },
+    async removeEnvFile(fileId) {
+      if (!confirm('Delete this env file and all its values?')) return;
+      try {
+        await api.deleteEnvFile(this.app.id, fileId);
+        this.envFiles = await api.getEnvFiles(this.app.id);
       } catch (e) {
         alert('Failed: ' + e.message);
       }

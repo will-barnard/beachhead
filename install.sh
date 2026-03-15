@@ -135,8 +135,14 @@ if [[ -z "$LETSENCRYPT_EMAIL" ]]; then
 fi
 
 # Database password
-DB_PASSWORD=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | head -c 32)
-info "Generated secure database password"
+# Reuse existing DB password if .env already exists — new password would break existing pgdata volume
+if [[ -f .env ]] && grep -q "^POSTGRES_PASSWORD=" .env; then
+  DB_PASSWORD=$(grep "^POSTGRES_PASSWORD=" .env | cut -d'=' -f2)
+  info "Reusing existing database password from .env"
+else
+  DB_PASSWORD=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | head -c 32)
+  info "Generated secure database password"
+fi
 
 # GitHub webhook secret (optional)
 echo ""

@@ -10,6 +10,7 @@ const worker = require('./services/worker');
 // Routes
 const appsRouter = require('./routes/apps');
 const envVarsRouter = require('./routes/envVars');
+const envFilesRouter = require('./routes/envFiles');
 const webhooksRouter = require('./routes/webhooks');
 
 const app = express();
@@ -48,6 +49,7 @@ app.use('/api', apiLimiter);
 // API routes
 app.use('/api/apps', appsRouter);
 app.use('/api/apps', envVarsRouter);
+app.use('/api/apps', envFilesRouter);
 
 // Health endpoint
 app.get('/api/health', (req, res) => {

@@ -58,6 +58,27 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    name: '005_create_env_files',
+    sql: `
+      CREATE TABLE IF NOT EXISTS env_files (
+        id SERIAL PRIMARY KEY,
+        app_id INT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(app_id, path)
+      );
+    `,
+  },
+  {
+    name: '006_add_env_file_id_to_env_vars',
+    sql: `
+      ALTER TABLE env_vars ADD COLUMN IF NOT EXISTS env_file_id INT REFERENCES env_files(id) ON DELETE CASCADE;
+      CREATE UNIQUE INDEX IF NOT EXISTS env_vars_file_unique
+        ON env_vars(app_id, key, env_file_id)
+        WHERE env_file_id IS NOT NULL;
+    `,
+  },
 ];
 
 async function migrate() {

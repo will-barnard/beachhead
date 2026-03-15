@@ -3,6 +3,7 @@ const path = require('path');
 const Deployments = require('../models/deployments');
 const Apps = require('../models/apps');
 const EnvVars = require('../models/envVars');
+const { EnvFiles } = require('../models/envFiles');
 const { generateOverride, writeOverrideFile, readBeachheadConfig } = require('./composeWrapper');
 const { gitClone, dockerComposeUp, dockerComposeDown, ensureNetwork } = require('./docker');
 const { checkHealth } = require('./healthCheck');
@@ -73,12 +74,24 @@ async function processDeployment(deployment) {
     writeOverrideFile(deployDir, overrideContent);
 
     // Write a .env file for any unscoped env vars (many apps read from .env)
-    const globalEnvVars = envVars.filter((v) => !v.target_service);
+    const globalEnvVars = envVars.filter((v) => !v.target_service && !v.env_file_id);
     if (globalEnvVars.length > 0) {
       const envContent = globalEnvVars.map((v) => `${v.key}=${envQuote(v.value)}`).join('\n');
       const envPath = path.join(deployDir, '.env');
       fs.writeFileSync(envPath, envContent, 'utf8');
       fs.chmodSync(envPath, 0o600);
+    }
+
+    // Write any explicitly-defined env files to their specified paths
+    const envFiles = await EnvFiles.getByAppId(app.id);
+    for (const envFile of envFiles) {
+      if (!envFile.vars || envFile.vars.length === 0) continue;
+      const filePath = path.join(deployDir, envFile.path);
+      const fileDir = path.dirname(filePath);
+      fs.mkdirSync(fileDir, { recursive: true });
+      const fileContent = envFile.vars.map((v) => `${v.key}=${envQuote(v.value)}`).join('\n') + '\n';
+      fs.writeFileSync(filePath, fileContent, 'utf8');
+      fs.chmodSync(filePath, 0o600);
     }
 
     // Set restrictive permissions on override file (contains env vars)

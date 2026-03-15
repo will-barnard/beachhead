@@ -34,5 +34,8 @@ export default {
   getEnvVars: (appId) => request(`/apps/${appId}/env`),
   setEnvVar: (appId, data) => request(`/apps/${appId}/env`, { method: 'POST', body: data }),
   deleteEnvVar: (appId, envId) => request(`/apps/${appId}/env/${envId}`, { method: 'DELETE' }),
+  getEnvFiles: (appId) => request(`/apps/${appId}/env-files`),
+  saveEnvFile: (appId, data) => request(`/apps/${appId}/env-files`, { method: 'POST', body: data }),
+  deleteEnvFile: (appId, fileId) => request(`/apps/${appId}/env-files/${fileId}`, { method: 'DELETE' }),
   getHealth: () => request('/health'),
 };
