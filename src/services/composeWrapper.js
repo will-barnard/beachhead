@@ -17,7 +17,6 @@ function generateOverride({ publicService, domain, publicPort, envVars }) {
   const port = publicPort || 80;
 
   const override = {
-    version: '3.9',
     services: {
       [publicService]: {
         environment: [
