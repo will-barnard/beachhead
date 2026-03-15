@@ -66,6 +66,7 @@ async function processDeployment(deployment) {
     await transition(deployment, STATES.ENV_INJECTION, 'Injecting environment variables');
     const envVars = await EnvVars.getByAppId(app.id);
     const overrideContent = generateOverride({
+      appSlug: app.name,
       publicService,
       domain: app.domain,
       publicPort: publicPort || 80,
@@ -120,6 +121,24 @@ async function processDeployment(deployment) {
 
     // ── SUCCESS ──
     await transition(deployment, STATES.SUCCESS, 'Deployment successful');
+
+    // Stop the previous deployment's containers now that the new one is healthy.
+    if (app.stop_previous !== false) {
+      const prevDeployment = await Deployments.findLastSuccessful(app.id, deployment.id);
+      if (prevDeployment) {
+        const prevDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${prevDeployment.id}`);
+        const prevOverride = path.join(prevDir, 'beachhead.override.yml');
+        if (fs.existsSync(prevOverride)) {
+          try {
+            logger.info(`[deploy #${deployment.id}] Stopping previous deployment #${prevDeployment.id}`);
+            await dockerComposeDown(prevDir, 'beachhead.override.yml');
+          } catch (stopErr) {
+            logger.warn(`[deploy #${deployment.id}] Could not stop previous deployment: ${stopErr.message}`);
+          }
+        }
+      }
+    }
+
     logger.info(`[deploy #${deployment.id}] Deployment complete for ${app.name}`);
   } catch (err) {
     logger.error(`[deploy #${deployment.id}] Failed: ${err.message}`);

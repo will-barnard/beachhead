@@ -87,6 +87,21 @@ const Deployments = {
   },
 
   /**
+   * Find the last successful deployment for an app, excluding a given id.
+   * Used to locate the old deploy dir when tearing down before a new deploy.
+   */
+  async findLastSuccessful(appId, excludeId) {
+    const { rows } = await db.query(
+      `SELECT * FROM deployments
+       WHERE app_id = $1 AND id != $2 AND state = 'SUCCESS'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [appId, excludeId]
+    );
+    return rows[0] || null;
+  },
+
+  /**
    * Check if there's an active (non-terminal) deployment for the given app,
    * excluding a specific deployment id.
    */

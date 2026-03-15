@@ -35,7 +35,7 @@ router.get('/:id', async (req, res) => {
 // Create app
 router.post('/', async (req, res) => {
   try {
-    const { name, repo_url, domain, branch, public_service, public_port, auto_deploy, webhook_secret, system_app } = req.body;
+    const { name, repo_url, domain, branch, public_service, public_port, auto_deploy, stop_previous, webhook_secret, system_app } = req.body;
 
     if (!name || !repo_url || !domain) {
       return res.status(400).json({ error: 'name, repo_url, and domain are required' });
@@ -71,7 +71,7 @@ router.post('/', async (req, res) => {
 
     const app = await Apps.create({
       name, repo_url: normalizedRepoUrl, domain, branch, public_service, public_port,
-      auto_deploy, webhook_secret, system_app,
+      auto_deploy, stop_previous, webhook_secret, system_app,
     });
 
     logger.info(`App created: ${app.name} (${app.domain})`);

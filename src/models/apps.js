@@ -1,12 +1,12 @@
 const db = require('../db');
 
 const Apps = {
-  async create({ name, repo_url, domain, branch, public_service, public_port, auto_deploy, webhook_secret, system_app }) {
+  async create({ name, repo_url, domain, branch, public_service, public_port, auto_deploy, stop_previous, webhook_secret, system_app }) {
     const { rows } = await db.query(
-      `INSERT INTO apps (name, repo_url, domain, branch, public_service, public_port, auto_deploy, webhook_secret, system_app)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO apps (name, repo_url, domain, branch, public_service, public_port, auto_deploy, stop_previous, webhook_secret, system_app)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [name, repo_url, domain, branch || 'main', public_service, public_port, auto_deploy !== false, webhook_secret, system_app || false]
+      [name, repo_url, domain, branch || 'main', public_service, public_port, auto_deploy !== false, stop_previous !== false, webhook_secret, system_app || false]
     );
     return rows[0];
   },

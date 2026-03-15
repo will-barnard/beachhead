@@ -79,6 +79,12 @@ const MIGRATIONS = [
         WHERE env_file_id IS NOT NULL;
     `,
   },
+  {
+    name: '007_add_stop_previous_to_apps',
+    sql: `
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS stop_previous BOOLEAN DEFAULT true;
+    `,
+  },
 ];
 
 async function migrate() {

@@ -34,6 +34,9 @@
       <div class="form-group">
         <label><input type="checkbox" v-model="form.auto_deploy" style="width:auto; margin-right:0.5rem;" /> Auto-deploy on push</label>
       </div>
+      <div class="form-group">
+        <label><input type="checkbox" v-model="form.stop_previous" style="width:auto; margin-right:0.5rem;" /> Stop previous containers after successful deploy</label>
+      </div>
       <button class="btn" type="submit" :disabled="submitting">
         {{ submitting ? 'Creating...' : 'Create App' }}
       </button>
@@ -55,6 +58,7 @@ export default {
       public_port: null,
       webhook_secret: '',
       auto_deploy: true,
+      stop_previous: true,
     },
     error: null,
     submitting: false,
