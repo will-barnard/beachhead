@@ -24,7 +24,10 @@ router.post('/github', expressRaw({ type: 'application/json', limit: '10mb' }), 
     const event = req.headers['x-github-event'];
     const rawBody = req.body;
 
+    logger.info(`Webhook received: event=${event} signature=${signature ? 'present' : 'absent'}`);
+
     if (!rawBody || !Buffer.isBuffer(rawBody)) {
+      logger.warn('Webhook rejected: invalid payload (not a buffer)');
       return res.status(400).json({ error: 'Invalid payload' });
     }
 
@@ -32,13 +35,19 @@ router.post('/github', expressRaw({ type: 'application/json', limit: '10mb' }), 
 
     // Only process push events
     if (event !== 'push') {
+      logger.info(`Webhook ignored: event type is '${event}', not 'push'`);
       return res.status(200).json({ message: `Ignored event: ${event}` });
     }
 
     const repoUrl = payload.repository?.html_url || payload.repository?.clone_url;
     if (!repoUrl) {
+      logger.warn('Webhook rejected: could not determine repository URL from payload');
       return res.status(400).json({ error: 'Could not determine repository URL' });
     }
+
+    const ref = payload.ref || '';
+    const commitHash = payload.after || payload.head_commit?.id || null;
+    logger.info(`Webhook push: repo=${repoUrl} ref=${ref} commit=${commitHash}`);
 
     // Normalize URL: strip .git suffix and trailing slashes
     const normalizedUrl = repoUrl.replace(/\.git$/, '').replace(/\/+$/, '');
@@ -49,21 +58,21 @@ router.post('/github', expressRaw({ type: 'application/json', limit: '10mb' }), 
       // Also try with .git suffix
       const appsAlt = await Apps.findByRepoUrl(normalizedUrl + '.git');
       if (appsAlt.length === 0) {
-        logger.warn(`No app registered for repo: ${normalizedUrl}`);
+        logger.warn(`Webhook: no app registered for repo: ${normalizedUrl}`);
         return res.status(404).json({ error: 'No app registered for this repository' });
       }
       apps.push(...appsAlt);
     }
 
-    const ref = payload.ref || '';
-    const commitHash = payload.after || payload.head_commit?.id || null;
+    logger.info(`Webhook: found ${apps.length} app(s) matching repo ${normalizedUrl}: ${apps.map(a => a.name).join(', ')}`);
+
     const deploymentsCreated = [];
 
     for (const app of apps) {
       // Check branch match
       const expectedRef = `refs/heads/${app.branch}`;
       if (ref !== expectedRef) {
-        logger.info(`Skipping ${app.name}: push to ${ref}, expected ${expectedRef}`);
+        logger.info(`Webhook: skipping ${app.name} — push ref '${ref}' does not match expected '${expectedRef}'`);
         continue;
       }
 
@@ -71,14 +80,17 @@ router.post('/github', expressRaw({ type: 'application/json', limit: '10mb' }), 
       const secret = app.webhook_secret || config.github.webhookSecret;
       if (secret) {
         if (!verifyGitHubSignature(secret, rawBody, signature)) {
-          logger.warn(`Invalid webhook signature for app: ${app.name}`);
+          logger.warn(`Webhook: invalid signature for app '${app.name}' — check webhook secret matches GitHub`);
           continue;
         }
+        logger.info(`Webhook: signature verified for ${app.name}`);
+      } else {
+        logger.warn(`Webhook: no secret configured for ${app.name} — skipping signature check`);
       }
 
       // Check auto_deploy
       if (!app.auto_deploy) {
-        logger.info(`Auto-deploy disabled for ${app.name}, skipping`);
+        logger.info(`Webhook: auto-deploy disabled for ${app.name}, skipping`);
         continue;
       }
 
@@ -88,10 +100,11 @@ router.post('/github', expressRaw({ type: 'application/json', limit: '10mb' }), 
         commit_hash: commitHash,
       });
 
-      logger.info(`Webhook deployment created for ${app.name}: #${deployment.id} (${commitHash})`);
+      logger.info(`Webhook: deployment #${deployment.id} created for ${app.name} (commit ${commitHash})`);
       deploymentsCreated.push(deployment);
     }
 
+    logger.info(`Webhook: done — created ${deploymentsCreated.length} deployment(s)`);
     res.status(200).json({
       message: `Created ${deploymentsCreated.length} deployment(s)`,
       deployments: deploymentsCreated,
