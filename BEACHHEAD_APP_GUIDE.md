@@ -2,7 +2,7 @@
 
 ## Quick reference — paste this to an AI when building a Beachhead-compatible app
 
-> **Deploying on Beachhead** — include a `beachhead.json` in the repo root specifying `public_service` (the service name that handles HTTP, e.g. `frontend`) and `public_port` (e.g. `80`). In `docker-compose.yml`: no `version:` key; use `expose:` not `ports:` for all services (Beachhead's nginx-proxy handles routing); do NOT set `container_name` on any service (Beachhead sets unique names per deployment via its override — a hardcoded name will conflict and crash the deploy); postgres healthcheck must have `start_period: 30s`; database volume **must** use a fixed `name:` (e.g. `name: myapp-postgres`) — without it every redeploy creates a fresh volume and wipes the database; frontend nginx must proxy to `backend` by Docker service name (not `localhost`). Set `DB_PASSWORD` and any vars shared between services as **global** env vars in the Beachhead dashboard (no Target Service) so they're written to `.env` for Docker Compose variable substitution. Use `npm install` not `npm ci` in Dockerfiles.
+> **Deploying on Beachhead** — include a beachhead.json in the repo root specifying public_service (the service name that handles HTTP, e.g. frontend) and public_port (e.g. 80). In docker-compose.yml: no version: key; use expose: not ports: for all services (Beachhead's nginx-proxy handles routing); do NOT set container_name on any service (Beachhead sets unique names per deployment via its override — a hardcoded name will conflict and crash the deploy); **all services must be on an explicitly named internal network** (e.g. `networks: [internal]` on every service plus a `networks: {internal:}` top-level entry) — without this, Beachhead's override replaces the implicit default network on the frontend, cutting it off from the backend (DNS resolves but connection fails); postgres healthcheck must have start_period: 30s; database volume must use a fixed name: (e.g. name: myapp-postgres) — without it every redeploy creates a fresh volume and wipes the database; frontend nginx must proxy to backend by Docker service name (not localhost). IMPORTANT: nginx resolves upstream hostnames at config load time — if the backend container isn't ready yet, nginx will crash with "host not found in upstream". Fix this by using Docker's embedded DNS resolver and a variable for proxy_pass so resolution happens at request time, not startup. In nginx.conf use: `resolver 127.0.0.11 valid=30s; set $backend_upstream http://backend:3001; proxy_pass $backend_upstream;` instead of a bare `proxy_pass http://backend:3001;`. Set DB_PASSWORD and any vars shared between services as global env vars in the Beachhead dashboard (no Target Service) so they're written to .env for Docker Compose variable substitution. Use npm install not npm ci in Dockerfiles.
 
 ---
 
@@ -40,6 +40,7 @@ Tells Beachhead which service exposes HTTP traffic and on what port.
 - Use `npm install` not `npm ci` in Dockerfiles (avoids lockfile conflicts)
 - Use `expose:` not `ports:` for all services — Beachhead's nginx-proxy handles routing; binding host ports is unnecessary and can conflict
 - **Do not set `container_name`** on any service — Beachhead's override sets unique names per deployment (`slug-service-dN`); a hardcoded name will conflict with the running previous deploy and cause the entire deploy to fail
+- **Always define an explicit internal network** and put every service on it — without this, Beachhead's override replaces the frontend's implicit default network, isolating it from the backend
 
 ### Postgres healthcheck
 Must include `start_period` so Beachhead doesn't fail while postgres is initializing:
@@ -186,6 +187,7 @@ volumes:
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
+| `backend could not be resolved` / 502 on all API calls | No explicit internal network — Beachhead's override replaces the frontend's implicit default network, cutting it off from the backend | Add `networks: [internal]` to every service and `networks: {internal:}` at the top level |
 | `dependency failed to start: container is unhealthy` | Postgres health check fires before init completes | Add `start_period: 30s` to healthcheck |
 | 502 from nginx after redeploy | Old frontend container still on `beachhead-net`, proxying to a backend that no longer exists | Beachhead auto-cleans up on success; for manual recovery `docker stop <old-frontend-container>` |
 | `${DB_PASSWORD}` empty in postgres | Env var is targeted to `backend` only, not written to `.env` | Set `DB_PASSWORD` as a global env var (no target service) |
