@@ -1,0 +1,101 @@
+This ecosystem uses brew-auth as a shared identity provider for all apps on the *.brew.rip domain. After a user logs in at auth.brew.rip, their JWT is stored in an HttpOnly cookie named brew_token scoped to .brew.rip. Every app on any subdomain (e.g. myapp.brew.rip) automatically receives this cookie on all requests — no redirect or token passing needed. The backend is responsible for reading and verifying the cookie; JavaScript cannot access it.
+
+AUTH SERVER
+  URL:          https://auth.brew.rip
+  JWKS:         https://auth.brew.rip/.well-known/jwks.json
+  Issuer:       https://auth.brew.rip
+  Algorithm:    RS256
+  Cookie name:  brew_token
+  Cookie scope: .brew.rip (all subdomains)
+  Expiry:       24 hours (configurable via JWT_EXPIRATION_HOURS env var)
+
+JWT CLAIMS
+  sub                       — user UUID (string)
+  email                     — user email address (string)
+  username                  — display name (string)
+  role                      — "super_admin", "admin", or "user" (string)
+  password_change_required  — true if user must change password on next login (boolean)
+  iss                       — "https://auth.brew.rip"
+  iat / exp                 — issued at / expiration timestamps
+
+VERIFYING THE TOKEN IN A NEW APP'S BACKEND
+  1. Read the brew_token cookie from the incoming request (NOT the Authorization header).
+  2. Fetch the JWKS from https://auth.brew.rip/.well-known/jwks.json to get the public key.
+     Use the kid in the JWT header to select the correct key from the JWKS keys array.
+     Cache the JWKS with a reasonable TTL (e.g. 10 minutes) to avoid hammering the auth server.
+  3. Verify the JWT signature using RS256 with the retrieved public key.
+  4. Validate: issuer == "https://auth.brew.rip", expiration is in the future.
+  5. Extract claims from the verified payload.
+
+  Node.js example using jwks-rsa + jsonwebtoken:
+    const jwksRsa = require('jwks-rsa');
+    const jwt = require('jsonwebtoken');
+    const client = jwksRsa({ jwksUri: 'https://auth.brew.rip/.well-known/jwks.json', cache: true });
+    function getKey(header, cb) {
+      client.getSigningKey(header.kid, (err, key) => cb(err, key?.getPublicKey()));
+    }
+    jwt.verify(req.cookies.brew_token, getKey, { algorithms: ['RS256'], issuer: 'https://auth.brew.rip' }, (err, decoded) => { ... });
+
+  Express — also add cookie-parser middleware:
+    const cookieParser = require('cookie-parser');
+    app.use(cookieParser());
+
+REDIRECTING UNAUTHENTICATED USERS
+  If no cookie / invalid token, redirect to:
+    https://auth.brew.rip/login?return_url=<current full URL>
+  brew-auth will redirect back to return_url after successful login.
+  Only accept return_url values that start with https:// (prevent open redirect).
+
+CREATING USER ACCOUNTS
+
+  Accounts are invite-only. The flow is:
+    1. A super_admin or admin sends an invite via POST /api/users/invite.
+       This emails the user a registration token.
+    2. The user visits the registration link, which calls POST /api/auth/register
+       with the token + their chosen username + password.
+
+  POST /api/auth/login
+    Body: { "email": "...", "password": "..." }
+    Response: { "token": "...", "passwordChangeRequired": false }
+    Also sets the brew_token cookie. The token in the response body is the same JWT.
+
+  POST /api/auth/register  (complete an invitation)
+    Body: { "token": "<invite token>", "username": "...", "password": "..." }
+    Response: { "token": "...", "passwordChangeRequired": false }
+    Sets the brew_token cookie.
+
+  POST /api/users/invite  (requires valid JWT cookie, role admin or super_admin)
+    Body: { "email": "...", "role": "user" | "admin" }
+    Roles: super_admin can invite admin or user. admin can only invite user. Cannot invite super_admin.
+    Sends an email via Resend with a registration link.
+
+  GET /api/auth/me  (requires valid JWT cookie)
+    Returns: { "id": "...", "email": "...", "username": "...", "role": "..." }
+
+  POST /api/auth/logout  (requires valid JWT cookie)
+    Clears the brew_token cookie.
+
+  POST /api/auth/change-password  (requires valid JWT cookie)
+    Body: { "currentPassword": "...", "newPassword": "..." }
+
+  GET /api/users  (requires valid JWT cookie, role admin or super_admin)
+    Returns list of all users.
+
+SUPER ADMIN ACCOUNT
+  Created automatically on first startup from the SUPER_ADMIN_EMAIL and
+  SUPER_ADMIN_PASSWORD env vars set during Beachhead's Configure Auth flow.
+  The super admin has role "super_admin" and can invite admins and users.
+  On first login the super admin may be prompted to change their password
+  (password_change_required claim will be true).
+
+ROLES
+  super_admin — full access, can invite admin and user, can manage all users
+  admin       — can invite users, can manage non-admin users
+  user        — standard access, no user management
+
+ENVIRONMENT VARIABLES (Beachhead side)
+  AUTH_JWKS_URL=https://auth.brew.rip/.well-known/jwks.json
+  AUTH_ISSUER=https://auth.brew.rip
+  AUTH_COOKIE_NAME=brew_token
+  These are written automatically by the "Configure Auth" + "Activate Auth"
+  bootstrap flow in the Beachhead dashboard.
