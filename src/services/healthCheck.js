@@ -9,44 +9,47 @@ const logger = require('../logger');
  * nginx-proxy, we check HTTP (the proxy handles SSL termination externally).
  * Sends the Host header so nginx-proxy routes to the correct service.
  */
-async function checkHealth(domain, { timeout, interval } = {}) {
+async function checkHealth(domain, { timeout, interval, path: healthPath } = {}) {
   const totalTimeout = timeout || config.healthCheck.timeout;
   const checkInterval = interval || config.healthCheck.interval;
+  const urlPath = healthPath || '/';
   const start = Date.now();
+  let lastStatus = null;
 
   while (Date.now() - start < totalTimeout) {
     try {
-      const healthy = await httpGet(`http://beachhead-proxy`, 5000, domain);
-      if (healthy) {
-        logger.info(`Health check passed for ${domain}`);
+      const status = await httpGetStatus(`http://beachhead-proxy${urlPath}`, 5000, domain);
+      lastStatus = status;
+      if (status >= 200 && status < 400) {
+        logger.info(`Health check passed for ${domain}${urlPath} (${status})`);
         return true;
       }
-    } catch {
-      // retry
+      logger.debug(`Health check ${domain}${urlPath}: ${status}`);
+    } catch (err) {
+      logger.debug(`Health check ${domain}${urlPath}: ${err.message}`);
     }
     await sleep(checkInterval);
   }
 
-  logger.warn(`Health check timed out for ${domain} after ${totalTimeout}ms`);
+  logger.warn(`Health check timed out for ${domain}${urlPath} after ${totalTimeout}ms (last status: ${lastStatus})`);
   return false;
 }
 
-function httpGet(url, timeoutMs, hostHeader) {
-  return new Promise((resolve) => {
+function httpGetStatus(url, timeoutMs, hostHeader) {
+  return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http;
     const options = { timeout: timeoutMs };
     if (hostHeader) {
       options.headers = { Host: hostHeader };
     }
     const req = mod.get(url, options, (res) => {
-      // Any 2xx or 3xx is considered healthy
-      resolve(res.statusCode >= 200 && res.statusCode < 400);
+      resolve(res.statusCode);
       res.resume(); // consume response data to free memory
     });
-    req.on('error', () => resolve(false));
+    req.on('error', (err) => reject(err));
     req.on('timeout', () => {
       req.destroy();
-      resolve(false);
+      reject(new Error('timeout'));
     });
   });
 }

@@ -75,14 +75,38 @@ async function dockerComposeDown(cwd, overrideFile) {
 
 /**
  * Capture docker compose logs (best-effort, for debugging failed deploys).
+ * Falls back to docker logs for individual containers if compose logs fails.
  */
 async function dockerComposeLogs(cwd, overrideFile) {
-  const args = ['compose', '-f', 'docker-compose.yml'];
-  if (overrideFile) args.push('-f', overrideFile);
-  args.push('logs', '--no-color', '--tail', '100');
+  // Try compose logs first
   try {
-    const { stdout, stderr } = await exec('docker', args, { cwd, timeout: 30000 });
-    return (stdout || '') + (stderr || '');
+    const args = ['compose', '-f', 'docker-compose.yml'];
+    if (overrideFile) args.push('-f', overrideFile);
+    args.push('logs', '--no-color', '--tail', '100');
+    const { stdout, stderr } = await exec('docker', args, { cwd, timeout: 15000 });
+    const output = (stdout || '') + (stderr || '');
+    if (output.trim()) return output;
+  } catch {
+    // compose logs failed — fall through to container-level fallback
+  }
+
+  // Fallback: list running containers from the project and get logs individually
+  try {
+    const args = ['compose', '-f', 'docker-compose.yml'];
+    if (overrideFile) args.push('-f', overrideFile);
+    args.push('ps', '-a', '--format', '{{.Name}}');
+    const { stdout } = await exec('docker', args, { cwd, timeout: 10000 });
+    const containers = (stdout || '').trim().split('\n').filter(Boolean);
+    const logs = [];
+    for (const name of containers) {
+      try {
+        const result = await exec('docker', ['logs', '--tail', '50', name], { timeout: 10000 });
+        logs.push(`=== ${name} ===\n${(result.stdout || '') + (result.stderr || '')}`);
+      } catch {
+        logs.push(`=== ${name} === (failed to get logs)`);
+      }
+    }
+    return logs.join('\n') || '(no container logs found)';
   } catch (err) {
     return `(failed to capture logs: ${err.message})`;
   }

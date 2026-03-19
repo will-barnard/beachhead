@@ -25,8 +25,8 @@ const config = {
   },
 
   healthCheck: {
-    timeout: parseInt(process.env.HEALTH_CHECK_TIMEOUT, 10) || 30000,
-    interval: parseInt(process.env.HEALTH_CHECK_INTERVAL, 10) || 2000,
+    timeout: parseInt(process.env.HEALTH_CHECK_TIMEOUT, 10) || 120000,
+    interval: parseInt(process.env.HEALTH_CHECK_INTERVAL, 10) || 3000,
   },
 };
 

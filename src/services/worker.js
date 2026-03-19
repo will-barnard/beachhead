@@ -126,8 +126,9 @@ async function processDeployment(deployment) {
     // No explicit proxy config needed — the override already injects those vars.
 
     // ── VERIFY_HEALTH ──
-    await transition(deployment, STATES.VERIFY_HEALTH, `Checking health of ${app.domain}`);
-    const healthy = await checkHealth(app.domain);
+    const healthPath = bhConfig?.health_check || '/';
+    await transition(deployment, STATES.VERIFY_HEALTH, `Checking health of ${app.domain}${healthPath}`);
+    const healthy = await checkHealth(app.domain, { path: healthPath });
     if (!healthy) {
       throw new Error(`Health check failed for ${app.domain}`);
     }
