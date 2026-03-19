@@ -111,7 +111,8 @@ router.post('/configure-auth', async (req, res) => {
     const issuer = `https://${auth_domain}`;
 
     const envUpdated = updateHostEnv('AUTH_JWKS_URL', jwksUrl) &&
-                       updateHostEnv('AUTH_ISSUER', issuer);
+                       updateHostEnv('AUTH_ISSUER', issuer) &&
+                       updateHostEnv('AUTH_COOKIE_NAME', 'brew_token');
 
     if (!envUpdated) {
       logger.warn('Bootstrap: could not update host .env file — run activate-auth after deploy');
