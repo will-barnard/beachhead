@@ -4,11 +4,13 @@ import App from './App.vue';
 import AppsList from './views/AppsList.vue';
 import AppDetail from './views/AppDetail.vue';
 import NewApp from './views/NewApp.vue';
+import ConfigureAuth from './views/ConfigureAuth.vue';
 
 const routes = [
   { path: '/', component: AppsList },
   { path: '/apps/new', component: NewApp },
   { path: '/apps/:id', component: AppDetail },
+  { path: '/bootstrap', component: ConfigureAuth },
 ];
 
 const router = createRouter({

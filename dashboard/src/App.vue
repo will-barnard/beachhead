@@ -3,7 +3,10 @@
     <header>
       <nav>
         <router-link to="/" class="logo">⚓ Beachhead</router-link>
-        <router-link to="/apps/new" class="btn">+ New App</router-link>
+        <div style="display: flex; gap: 0.5rem;">
+          <router-link v-if="bootstrapMode" to="/bootstrap" class="btn btn-warning">⚙ Configure Auth</router-link>
+          <router-link to="/apps/new" class="btn">+ New App</router-link>
+        </div>
       </nav>
     </header>
     <main>
@@ -11,6 +14,24 @@
     </main>
   </div>
 </template>
+
+<script>
+import api from './api.js';
+
+export default {
+  data: () => ({
+    bootstrapMode: false,
+  }),
+  async mounted() {
+    try {
+      const health = await api.getHealth();
+      this.bootstrapMode = health.mode === 'bootstrap';
+    } catch {
+      // ignore — health check failure shouldn't block the UI
+    }
+  },
+};
+</script>
 
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -77,6 +98,7 @@ a:hover { text-decoration: underline; }
 }
 .btn:hover { opacity: 0.9; text-decoration: none; }
 .btn-danger { background: var(--danger); }
+.btn-warning { background: var(--warning); color: #000; }
 .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.75rem; }
 
 .card {
