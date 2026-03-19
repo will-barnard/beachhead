@@ -13,6 +13,7 @@ function exec(command, args, options = {}) {
       HOME: process.env.HOME,
       LANG: process.env.LANG,
       DOCKER_HOST: process.env.DOCKER_HOST,
+      COMPOSE_BAKE: 'false',   // disable buildx bake (requires buildx, exits 255 without it)
       ...options.env,
     };
 

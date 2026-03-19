@@ -239,6 +239,7 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=${BEACHHEAD_DIR}
+ExecStartPre=/usr/bin/docker network create beachhead-net || true
 ExecStart=/usr/bin/docker compose up -d --remove-orphans
 ExecStop=/usr/bin/docker compose stop
 TimeoutStartSec=120
