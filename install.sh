@@ -67,7 +67,6 @@ fi
 if ! command -v docker &>/dev/null; then
   info "Installing Docker Engine..."
   curl -fsSL https://get.docker.com | sudo sh
-  sudo systemctl enable --now docker
   # Add current user to docker group so we don't need sudo for docker commands
   if ! groups | grep -q docker; then
     sudo usermod -aG docker "$USER"
@@ -78,6 +77,9 @@ if ! command -v docker &>/dev/null; then
   fi
 fi
 DOCKER_SUDO="${DOCKER_SUDO:-}"
+
+# Ensure Docker starts at boot (covers both fresh install and pre-existing)
+sudo systemctl enable docker 2>/dev/null || true
 ok "Docker found: $(docker --version)"
 
 # Docker Compose (V2 plugin)
@@ -196,8 +198,8 @@ DEPLOY_BASE_DIR=/var/beachhead/deployments
 DOCKER_NETWORK=beachhead-net
 
 # Health Check
-HEALTH_CHECK_TIMEOUT=30000
-HEALTH_CHECK_INTERVAL=2000
+HEALTH_CHECK_TIMEOUT=120000
+HEALTH_CHECK_INTERVAL=3000
 EOF
 
 ok ".env written"
@@ -221,6 +223,32 @@ if command -v node &>/dev/null && [[ -d "dashboard" ]]; then
 else
   warn "Node.js not found locally — dashboard will be built inside Docker"
 fi
+
+# ── Install systemd startup service ─────────────────────────────────────────
+
+info "Installing beachhead systemd startup service..."
+BEACHHEAD_DIR="$(pwd)"
+sudo tee /etc/systemd/system/beachhead.service > /dev/null <<EOF
+[Unit]
+Description=Beachhead deployment platform
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=${BEACHHEAD_DIR}
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/bin/docker compose stop
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable beachhead.service
+ok "Startup service installed (beachhead.service)"
 
 # ── Start services ───────────────────────────
 
