@@ -24,8 +24,8 @@ ok "Repository up to date"
 # ── Rebuild and restart ───────────────────────
 
 info "Rebuilding and restarting Beachhead (zero-downtime swap)..."
-docker compose pull --quiet || true   # pull any updated base images
-docker compose up -d --build --remove-orphans 2>&1 | tail -10
+docker compose pull --quiet --ignore-buildable || true   # pull updated base images (skips build-only services)
+docker compose up -d --build --remove-orphans
 ok "Beachhead updated and running"
 
 # ── Wait for health ───────────────────────────
