@@ -13,6 +13,7 @@ const config = {
   auth: {
     jwksUrl: process.env.AUTH_JWKS_URL || '',
     issuer: process.env.AUTH_ISSUER || '',
+    cookieName: process.env.AUTH_COOKIE_NAME || 'access_token',
   },
 
   github: {

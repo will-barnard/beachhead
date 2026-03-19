@@ -1,4 +1,5 @@
 const express = require('express');
+const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -48,6 +49,7 @@ const apiLimiter = rateLimit({
 // Note: webhook route handles its own body parsing via express.raw()
 app.use('/api/webhooks', webhookLimiter, webhooksRouter);
 
+app.use(cookieParser());
 app.use(express.json());
 app.use('/api', apiLimiter);
 

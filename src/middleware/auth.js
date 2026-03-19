@@ -54,18 +54,29 @@ function verifyToken(token) {
  * In bootstrap mode (no AUTH_JWKS_URL), all requests pass through.
  * Once auth service is configured, JWT Bearer token is required.
  */
+function loginUrl() {
+  return config.auth.issuer ? `${config.auth.issuer}/login` : null;
+}
+
 function requireAuth(req, res, next) {
   if (isBootstrapMode()) {
     req.user = { role: 'super_admin', bootstrap: true };
     return next();
   }
 
+  // Accept token from Authorization header (API clients) or cookie (browser)
+  let token;
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Authorization header required' });
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7);
+  } else if (req.cookies && req.cookies[config.auth.cookieName]) {
+    token = req.cookies[config.auth.cookieName];
   }
 
-  const token = authHeader.slice(7);
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication required', loginUrl: loginUrl() });
+  }
+
   verifyToken(token)
     .then((decoded) => {
       req.user = decoded;
@@ -73,7 +84,7 @@ function requireAuth(req, res, next) {
     })
     .catch((err) => {
       logger.warn('JWT verification failed', { error: err.message });
-      res.status(401).json({ error: 'Invalid or expired token' });
+      res.status(401).json({ error: 'Invalid or expired token', loginUrl: loginUrl() });
     });
 }
 

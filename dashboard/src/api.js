@@ -1,12 +1,7 @@
 const BASE = '/api';
 
 async function request(path, options = {}) {
-  const token = localStorage.getItem('beachhead_token');
   const headers = { ...options.headers };
-
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
 
   if (options.body && typeof options.body === 'object') {
     headers['Content-Type'] = 'application/json';
@@ -15,6 +10,14 @@ async function request(path, options = {}) {
 
   const res = await fetch(`${BASE}${path}`, { ...options, headers });
   const data = await res.json().catch(() => null);
+
+  if (res.status === 401) {
+    const url = data?.loginUrl;
+    if (url) {
+      window.location.href = `${url}?return_url=${encodeURIComponent(window.location.href)}`;
+    }
+    throw new Error(data?.error || 'Authentication required');
+  }
 
   if (!res.ok) {
     throw new Error(data?.error || `Request failed: ${res.status}`);
