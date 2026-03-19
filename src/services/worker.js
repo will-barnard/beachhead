@@ -4,8 +4,8 @@ const Deployments = require('../models/deployments');
 const Apps = require('../models/apps');
 const EnvVars = require('../models/envVars');
 const { EnvFiles } = require('../models/envFiles');
-const { generateOverride, writeOverrideFile, readBeachheadConfig } = require('./composeWrapper');
-const { gitClone, dockerComposeUp, dockerComposeDown, ensureNetwork } = require('./docker');
+const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes } = require('./composeWrapper');
+const { exec, gitClone, dockerComposeUp, dockerComposeDown, dockerComposeLogs, ensureNetwork } = require('./docker');
 const { checkHealth } = require('./healthCheck');
 const config = require('../config');
 const logger = require('../logger');
@@ -64,6 +64,7 @@ async function processDeployment(deployment) {
     // ── ENV_INJECTION ──
     await transition(deployment, STATES.ENV_INJECTION, 'Injecting environment variables');
     const envVars = await EnvVars.getByAppId(app.id);
+    const namedVolumes = readNamedVolumes(deployDir);
     const overrideContent = generateOverride({
       appSlug: app.name,
       deployId: deployment.id,
@@ -71,6 +72,7 @@ async function processDeployment(deployment) {
       domain: app.domain,
       publicPort: publicPort || 80,
       envVars,
+      namedVolumes,
     });
     writeOverrideFile(deployDir, overrideContent);
 
@@ -101,6 +103,18 @@ async function processDeployment(deployment) {
     // ── BUILDING ──
     await transition(deployment, STATES.BUILDING, 'Building containers');
     await ensureNetwork(config.deploy.dockerNetwork);
+
+    // Pre-create any explicitly named volumes so Docker Compose treats them as external
+    // (avoids "volume already exists but was created for project X" warnings/errors
+    // when each deploy runs as a different Compose project).
+    for (const vol of namedVolumes) {
+      try {
+        await exec('docker', ['volume', 'create', vol.name]);
+        logger.info(`[deploy #${deployment.id}] Ensured volume: ${vol.name}`);
+      } catch {
+        // volume likely already exists — that's fine
+      }
+    }
 
     // ── STARTING_CONTAINERS ──
     await transition(deployment, STATES.STARTING_CONTAINERS, 'Starting containers');
@@ -141,6 +155,16 @@ async function processDeployment(deployment) {
     logger.info(`[deploy #${deployment.id}] Deployment complete for ${app.name}`);
   } catch (err) {
     logger.error(`[deploy #${deployment.id}] Failed: ${err.message}`);
+
+    // Capture container logs before teardown for debugging
+    try {
+      const logs = await dockerComposeLogs(deployDir, 'beachhead.override.yml');
+      if (logs) {
+        logger.error(`[deploy #${deployment.id}] Container logs before rollback:\n${logs}`);
+      }
+    } catch {
+      // best-effort
+    }
 
     // Rollback: always attempt compose down to clean up any partially-started containers.
     // Even if nothing started, compose down is a no-op.

@@ -31,6 +31,11 @@ const Apps = {
     return rows[0] || null;
   },
 
+  async findByName(name) {
+    const { rows } = await db.query('SELECT * FROM apps WHERE name = $1', [name]);
+    return rows[0] || null;
+  },
+
   async update(id, fields) {
     const allowed = ['name', 'repo_url', 'domain', 'branch', 'public_service', 'public_port', 'auto_deploy', 'webhook_secret'];
     const sets = [];

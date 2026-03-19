@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 const config = require('../config');
 const logger = require('../logger');
 const { isBootstrapMode } = require('../middleware/auth');
@@ -29,6 +30,24 @@ function updateHostEnv(key, value) {
 
   fs.writeFileSync(ENV_HOST_PATH, content, 'utf8');
   return true;
+}
+
+function fetchJson(url, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { timeout: timeoutMs, rejectUnauthorized: false }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch {
+          reject(new Error(`Invalid JSON from ${url}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+  });
 }
 
 router.post('/configure-auth', async (req, res) => {
@@ -86,7 +105,8 @@ router.post('/configure-auth', async (req, res) => {
 
     logger.info(`Bootstrap: set ${Object.keys(envVars).length} env vars for brew-auth`);
 
-    // 3. Update host .env with auth config for Beachhead itself
+    // 3. Write auth config to host .env for persistence across restarts.
+    // DO NOT activate auth in-memory yet — brew-auth must be healthy first.
     const jwksUrl = `https://${auth_domain}/.well-known/jwks.json`;
     const issuer = `https://${auth_domain}`;
 
@@ -94,30 +114,92 @@ router.post('/configure-auth', async (req, res) => {
                        updateHostEnv('AUTH_ISSUER', issuer);
 
     if (!envUpdated) {
-      logger.warn('Bootstrap: could not update host .env file — auth will not persist across restarts');
+      logger.warn('Bootstrap: could not update host .env file — run activate-auth after deploy');
     }
 
-    // 4. Update in-memory config so bootstrap mode ends immediately
-    config.auth.jwksUrl = jwksUrl;
-    config.auth.issuer = issuer;
-    process.env.AUTH_JWKS_URL = jwksUrl;
-    process.env.AUTH_ISSUER = issuer;
-
-    logger.info('Bootstrap: auth config updated in-memory, bootstrap mode ended');
-
-    // 5. Trigger initial deploy
+    // 4. Trigger initial deploy
     const deployment = await Deployments.create({ app_id: app.id });
     logger.info(`Bootstrap: triggered brew-auth deployment id=${deployment.id}`);
 
     res.json({
-      message: 'Auth configured successfully. brew-auth is deploying.',
+      message: 'brew-auth created and deploying. Activate auth once it is healthy.',
       app_id: app.id,
       deployment_id: deployment.id,
+      auth_domain,
     });
   } catch (err) {
     logger.error(`Bootstrap configure-auth failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
+});
+
+/**
+ * Activate auth: verify brew-auth JWKS is reachable, then end bootstrap mode.
+ */
+router.post('/activate-auth', async (req, res) => {
+  if (!isBootstrapMode()) {
+    return res.status(200).json({ message: 'Auth is already active' });
+  }
+
+  // Find brew-auth app to get its domain
+  const brewAuth = await Apps.findByName('brew-auth');
+  if (!brewAuth) {
+    return res.status(400).json({ error: 'brew-auth app not found. Run configure-auth first.' });
+  }
+
+  const jwksUrl = `https://${brewAuth.domain}/.well-known/jwks.json`;
+  const issuer = `https://${brewAuth.domain}`;
+
+  // Verify JWKS endpoint is reachable
+  try {
+    const reachable = await fetchJson(jwksUrl, 10000);
+    if (!reachable || !reachable.keys) {
+      return res.status(503).json({
+        error: `JWKS endpoint not ready at ${jwksUrl}. Wait for brew-auth to finish deploying.`,
+      });
+    }
+  } catch (err) {
+    return res.status(503).json({
+      error: `Cannot reach JWKS at ${jwksUrl}: ${err.message}`,
+    });
+  }
+
+  // Activate auth in-memory
+  config.auth.jwksUrl = jwksUrl;
+  config.auth.issuer = issuer;
+  process.env.AUTH_JWKS_URL = jwksUrl;
+  process.env.AUTH_ISSUER = issuer;
+
+  // Persist to host .env (may already be written by configure-auth)
+  updateHostEnv('AUTH_JWKS_URL', jwksUrl);
+  updateHostEnv('AUTH_ISSUER', issuer);
+
+  logger.info('Bootstrap: auth activated — bootstrap mode ended');
+
+  res.json({ message: 'Auth activated. Beachhead now requires authentication.' });
+});
+
+/**
+ * Get bootstrap status: whether auth is configured, app deployed, JWKS reachable.
+ */
+router.get('/status', async (req, res) => {
+  const brewAuth = await Apps.findByName('brew-auth');
+
+  if (!brewAuth) {
+    return res.json({ step: 'not-configured', bootstrap: isBootstrapMode() });
+  }
+
+  // Check latest deployment
+  const deployments = await Deployments.findByAppId(brewAuth.id, 1);
+  const lastDeploy = deployments[0] || null;
+
+  res.json({
+    step: isBootstrapMode() ? 'awaiting-activation' : 'active',
+    bootstrap: isBootstrapMode(),
+    app_id: brewAuth.id,
+    domain: brewAuth.domain,
+    last_deploy: lastDeploy ? { id: lastDeploy.id, state: lastDeploy.state } : null,
+  });
 });
 
 module.exports = router;

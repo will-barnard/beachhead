@@ -74,6 +74,21 @@ async function dockerComposeDown(cwd, overrideFile) {
 }
 
 /**
+ * Capture docker compose logs (best-effort, for debugging failed deploys).
+ */
+async function dockerComposeLogs(cwd, overrideFile) {
+  const args = ['compose', '-f', 'docker-compose.yml'];
+  if (overrideFile) args.push('-f', overrideFile);
+  args.push('logs', '--no-color', '--tail', '100');
+  try {
+    const { stdout, stderr } = await exec('docker', args, { cwd, timeout: 30000 });
+    return (stdout || '') + (stderr || '');
+  } catch (err) {
+    return `(failed to capture logs: ${err.message})`;
+  }
+}
+
+/**
  * Ensure Docker network exists.
  */
 async function ensureNetwork(networkName) {
@@ -91,5 +106,6 @@ module.exports = {
   dockerComposeBuild,
   dockerComposeUp,
   dockerComposeDown,
+  dockerComposeLogs,
   ensureNetwork,
 };
