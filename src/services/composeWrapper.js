@@ -26,6 +26,7 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
     services: {
       [publicService]: {
         container_name: `${slug}-${publicService}${suffix}`,
+        restart: 'unless-stopped',
         environment: [
           `VIRTUAL_HOST=${domain}`,
           `VIRTUAL_PORT=${port}`,
@@ -64,6 +65,7 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
       if (!override.services[service]) {
         override.services[service] = {
           container_name: `${slug}-${service}${suffix}`,
+          restart: 'unless-stopped',
           environment: [],
         };
       }
