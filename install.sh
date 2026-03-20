@@ -226,31 +226,49 @@ fi
 
 # ── Install systemd startup service ─────────────────────────────────────────
 
-info "Installing beachhead systemd startup service..."
+info "Installing beachhead systemd startup services..."
 BEACHHEAD_DIR="$(pwd)"
+
+# This service runs immediately after docker.service to ensure beachhead-net
+# exists and any app containers with restart:unless-stopped can connect to it.
+sudo tee /etc/systemd/system/docker-beachhead-net.service > /dev/null <<'UNIT'
+[Unit]
+Description=Ensure beachhead-net Docker network exists and restart app containers
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '/usr/bin/docker network create beachhead-net 2>/dev/null; /usr/bin/docker ps -aq --filter status=exited | xargs -r /usr/bin/docker start 2>/dev/null; exit 0'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 sudo tee /etc/systemd/system/beachhead.service > /dev/null <<EOF
 [Unit]
 Description=Beachhead deployment platform
-Requires=docker.service
-After=docker.service network-online.target
+Requires=docker.service docker-beachhead-net.service
+After=docker.service docker-beachhead-net.service network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=${BEACHHEAD_DIR}
-ExecStartPre=/usr/bin/docker network create beachhead-net || true
 ExecStart=/usr/bin/docker compose up -d --remove-orphans
-ExecStartPost=/bin/sh -c 'sleep 5 && docker ps -aq --filter status=exited | xargs -r docker start 2>/dev/null || true'
 ExecStop=/usr/bin/docker compose stop
 TimeoutStartSec=120
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
 sudo systemctl daemon-reload
+sudo systemctl enable docker-beachhead-net.service
 sudo systemctl enable beachhead.service
-ok "Startup service installed (beachhead.service)"
+ok "Startup services installed (docker-beachhead-net.service, beachhead.service)"
 
 # ── Start services ───────────────────────────
 
