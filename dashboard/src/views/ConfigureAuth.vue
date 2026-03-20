@@ -164,6 +164,11 @@
                    pattern="[a-z0-9\-]+" title="Lowercase letters, numbers, and hyphens only" />
             <small style="color: var(--muted);">Unique identifier for this Beachhead instance</small>
           </div>
+          <div class="form-group">
+            <label>This Beachhead's URL <span style="color: var(--muted); font-weight: normal;">(optional)</span></label>
+            <input v-model="remoteForm.beachhead_url" placeholder="https://beachhead.example.com" />
+            <small style="color: var(--muted);">Stored in brew-auth for reference — leave blank if unknown</small>
+          </div>
 
           <hr style="border-color: var(--border); margin: 1.5rem 0;" />
           <h3 style="margin-bottom: 1rem; font-size: 1rem;">brew-auth Super Admin Credentials</h3>
@@ -206,6 +211,7 @@ export default {
       auth_url: '',
       workspace_name: '',
       workspace_slug: '',
+      beachhead_url: '',
       admin_email: '',
       admin_password: '',
     },

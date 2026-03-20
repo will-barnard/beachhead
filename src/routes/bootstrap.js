@@ -188,7 +188,7 @@ router.post('/connect-auth', async (req, res) => {
     return res.status(403).json({ error: 'Auth is already configured' });
   }
 
-  const { auth_url, workspace_name, workspace_slug, admin_email, admin_password } = req.body;
+  const { auth_url, workspace_name, workspace_slug, beachhead_url, admin_email, admin_password } = req.body;
 
   if (!auth_url || !workspace_name || !workspace_slug || !admin_email || !admin_password) {
     return res.status(400).json({ error: 'All fields are required' });
@@ -209,7 +209,7 @@ router.post('/connect-auth', async (req, res) => {
     }
 
     // 2. Register this Beachhead as a workspace
-    const beachheadUrl = `https://${config.domain}`;
+    const beachheadUrl = beachhead_url || (config.domain ? `https://${config.domain}` : '');
     logger.info(`Bootstrap: registering workspace "${workspace_slug}" at remote brew-auth`);
     const wsResult = await postJson(
       `${baseUrl}/api/workspaces/register`,
