@@ -14,6 +14,10 @@ const config = {
     jwksUrl: process.env.AUTH_JWKS_URL || '',
     issuer: process.env.AUTH_ISSUER || '',
     cookieName: process.env.AUTH_COOKIE_NAME || 'access_token',
+    workspaceId: process.env.AUTH_WORKSPACE_ID || '',
+    workspaceSlug: process.env.AUTH_WORKSPACE_SLUG || '',
+    workspaceApiKey: process.env.AUTH_WORKSPACE_API_KEY || '',
+    mode: process.env.AUTH_MODE || '', // 'local' or 'remote'
   },
 
   github: {

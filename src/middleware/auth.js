@@ -79,6 +79,21 @@ function requireAuth(req, res, next) {
 
   verifyToken(token)
     .then((decoded) => {
+      // If this Beachhead has a workspace configured, verify user has access
+      const wsId = config.auth.workspaceId;
+      if (wsId && decoded.workspaces) {
+        const membership = decoded.workspaces.find((w) => w.id === wsId || w.slug === config.auth.workspaceSlug);
+        if (!membership && decoded.role !== 'super_admin') {
+          return res.status(403).json({
+            error: 'You do not have access to this workspace',
+            loginUrl: loginUrl(),
+          });
+        }
+        // Attach workspace-specific role if found
+        if (membership) {
+          decoded.workspaceRole = membership.role;
+        }
+      }
       req.user = decoded;
       next();
     })

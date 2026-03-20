@@ -14,8 +14,8 @@ NC='\033[0m'
 echo ""
 echo -e "${BOLD}⚓  Beachhead — Reset Auth${NC}"
 echo ""
-echo -e "${YELLOW}This will clear AUTH_JWKS_URL, AUTH_ISSUER, and AUTH_COOKIE_NAME${NC}"
-echo -e "${YELLOW}from .env and restart Beachhead in bootstrap mode (no auth required).${NC}"
+echo -e "${YELLOW}This will clear all AUTH_* variables from .env${NC}"
+echo -e "${YELLOW}and restart Beachhead in bootstrap mode (no auth required).${NC}"
 echo ""
 read -rp "Continue? [y/N] " CONFIRM
 if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
@@ -26,6 +26,10 @@ fi
 sed -i 's/^AUTH_JWKS_URL=.*/AUTH_JWKS_URL=/' .env
 sed -i 's/^AUTH_ISSUER=.*/AUTH_ISSUER=/' .env
 sed -i 's/^AUTH_COOKIE_NAME=.*/AUTH_COOKIE_NAME=/' .env
+sed -i 's/^AUTH_MODE=.*/AUTH_MODE=/' .env
+sed -i 's/^AUTH_WORKSPACE_ID=.*/AUTH_WORKSPACE_ID=/' .env
+sed -i 's/^AUTH_WORKSPACE_SLUG=.*/AUTH_WORKSPACE_SLUG=/' .env
+sed -i 's/^AUTH_WORKSPACE_API_KEY=.*/AUTH_WORKSPACE_API_KEY=/' .env
 
 docker compose restart beachhead
 

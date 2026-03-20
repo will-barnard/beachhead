@@ -43,6 +43,7 @@ export default {
   deleteEnvFile: (appId, fileId) => request(`/apps/${appId}/env-files/${fileId}`, { method: 'DELETE' }),
   getHealth: () => request('/health'),
   configureAuth: (data) => request('/bootstrap/configure-auth', { method: 'POST', body: data }),
+  connectAuth: (data) => request('/bootstrap/connect-auth', { method: 'POST', body: data }),
   activateAuth: () => request('/bootstrap/activate-auth', { method: 'POST', body: {} }),
   getBootstrapStatus: () => request('/bootstrap/status'),
 };
