@@ -230,17 +230,18 @@ info "Installing beachhead systemd startup services..."
 BEACHHEAD_DIR="$(pwd)"
 
 # This service runs immediately after docker.service to ensure beachhead-net
-# exists and any app containers with restart:unless-stopped can connect to it.
+# exists before app containers try to connect to it.
+# App containers are brought up by Beachhead's own startup cleanup on boot.
 sudo tee /etc/systemd/system/docker-beachhead-net.service > /dev/null <<'UNIT'
 [Unit]
-Description=Ensure beachhead-net Docker network exists and restart app containers
+Description=Ensure beachhead-net Docker network exists
 Requires=docker.service
 After=docker.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c '/usr/bin/docker network create beachhead-net 2>/dev/null; /usr/bin/docker ps -aq --filter status=exited | xargs -r /usr/bin/docker start 2>/dev/null; exit 0'
+ExecStart=/bin/sh -c '/usr/bin/docker network create beachhead-net 2>/dev/null; exit 0'
 
 [Install]
 WantedBy=multi-user.target

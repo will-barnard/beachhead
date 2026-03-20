@@ -219,11 +219,57 @@ async function poll() {
   }
 }
 
+/**
+ * On startup: for each app, ensure only the current successful deployment's
+ * containers are running. Tear down any stale deploy directories, then bring
+ * up the current deployment so it's healthy after a reboot.
+ */
+async function startupCleanup() {
+  try {
+    const apps = await Apps.findAll();
+    for (const app of apps) {
+      const current = await Deployments.findLastSuccessful(app.id, -1);
+      const appDir = path.join(config.deploy.baseDir, `app-${app.id}`);
+
+      if (!fs.existsSync(appDir)) continue;
+
+      const deployDirs = fs.readdirSync(appDir).filter((d) => /^deploy-\d+$/.test(d));
+      for (const dirName of deployDirs) {
+        const deployId = parseInt(dirName.replace('deploy-', ''), 10);
+        const dirPath = path.join(appDir, dirName);
+        const overridePath = path.join(dirPath, 'beachhead.override.yml');
+        if (!fs.existsSync(overridePath)) continue;
+
+        if (!current || deployId !== current.id) {
+          // Stale deployment — tear it down
+          try {
+            logger.info(`[startup] Tearing down stale deployment #${deployId} for app ${app.id} (${app.name})`);
+            await dockerComposeDown(dirPath, 'beachhead.override.yml');
+          } catch (err) {
+            logger.warn(`[startup] Could not tear down stale deploy-${deployId}: ${err.message}`);
+          }
+        } else {
+          // Current deployment — bring it up in case it didn't survive the reboot
+          try {
+            logger.info(`[startup] Ensuring current deployment #${deployId} is running for app ${app.name}`);
+            await ensureNetwork(config.deploy.dockerNetwork);
+            await dockerComposeUp(dirPath, 'beachhead.override.yml');
+          } catch (err) {
+            logger.warn(`[startup] Could not start current deploy-${deployId}: ${err.message}`);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    logger.error('Startup cleanup failed', err);
+  }
+}
+
 function start() {
   if (running) return;
   running = true;
   logger.info('Deployment worker started');
-  poll();
+  startupCleanup().finally(() => poll());
 }
 
 function stop() {
