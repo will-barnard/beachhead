@@ -117,6 +117,22 @@ const Deployments = {
   },
 
   /**
+   * Force-fail all active (non-terminal, non-pending) deployments for a given app.
+   * Returns the number of cancelled rows.
+   */
+  async cancelActiveForApp(appId) {
+    const { rowCount } = await db.query(
+      `UPDATE deployments
+       SET state = 'FAILED',
+           logs = COALESCE(logs, '') || '[FAILED] Cancelled by user\n'
+       WHERE app_id = $1
+         AND state NOT IN ('PENDING', 'SUCCESS', 'FAILED')`,
+      [appId]
+    );
+    return rowCount;
+  },
+
+  /**
    * Mark deployments stuck in intermediate states for longer than thresholdMs as FAILED.
    * Returns the number of recovered rows.
    */

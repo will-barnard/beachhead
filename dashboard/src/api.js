@@ -32,6 +32,7 @@ export default {
   updateApp: (id, app) => request(`/apps/${id}`, { method: 'PUT', body: app }),
   deleteApp: (id) => request(`/apps/${id}`, { method: 'DELETE' }),
   deploy: (id, data) => request(`/apps/${id}/deploy`, { method: 'POST', body: data || {} }),
+  cancelDeployment: (id) => request(`/apps/${id}/cancel-deployment`, { method: 'POST', body: {} }),
   getDeployments: (id) => request(`/apps/${id}/deployments`),
   getDeployment: (appId, deployId) => request(`/apps/${appId}/deployments/${deployId}`),
   getEnvVars: (appId) => request(`/apps/${appId}/env`),

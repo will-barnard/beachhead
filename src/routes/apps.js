@@ -172,4 +172,19 @@ router.get('/:id/deployments/:deploymentId', async (req, res) => {
   }
 });
 
+// Cancel all active (stuck) deployments for an app
+router.post('/:id/cancel-deployment', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+
+    const cancelled = await Deployments.cancelActiveForApp(app.id);
+    logger.info(`Cancelled ${cancelled} active deployment(s) for app ${app.id} (${app.name})`);
+    res.json({ cancelled });
+  } catch (err) {
+    logger.error('Failed to cancel deployments', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 module.exports = router;

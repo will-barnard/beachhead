@@ -6,6 +6,7 @@
       <h2>{{ app.name }}</h2>
       <div>
         <button class="btn" @click="triggerDeploy" style="margin-right:0.5rem;">Deploy Now</button>
+        <button class="btn btn-warning" @click="cancelDeployment" style="margin-right:0.5rem;">Cancel Stuck Deploy</button>
         <button class="btn btn-danger" @click="deleteApp">Delete</button>
       </div>
     </div>
@@ -160,6 +161,18 @@ export default {
         await this.load();
       } catch (e) {
         alert('Deploy failed: ' + e.message);
+      }
+    },
+    async cancelDeployment() {
+      try {
+        const { cancelled } = await api.cancelDeployment(this.app.id);
+        if (cancelled === 0) {
+          alert('No active deployments to cancel.');
+        } else {
+          await this.load();
+        }
+      } catch (e) {
+        alert('Cancel failed: ' + e.message);
       }
     },
     async deleteApp() {
