@@ -241,6 +241,7 @@ RemainAfterExit=yes
 WorkingDirectory=${BEACHHEAD_DIR}
 ExecStartPre=/usr/bin/docker network create beachhead-net || true
 ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStartPost=/bin/sh -c 'sleep 5 && docker ps -aq --filter status=exited | xargs -r docker start 2>/dev/null || true'
 ExecStop=/usr/bin/docker compose stop
 TimeoutStartSec=120
 
