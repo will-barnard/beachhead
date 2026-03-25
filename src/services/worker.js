@@ -73,6 +73,7 @@ async function processDeployment(deployment) {
       publicPort: publicPort || 80,
       envVars,
       namedVolumes,
+      wwwRedirect: app.www_redirect || false,
     });
     writeOverrideFile(deployDir, overrideContent);
 

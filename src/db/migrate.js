@@ -85,6 +85,12 @@ const MIGRATIONS = [
       ALTER TABLE apps ADD COLUMN IF NOT EXISTS stop_previous BOOLEAN DEFAULT true;
     `,
   },
+  {
+    name: '008_add_www_redirect_to_apps',
+    sql: `
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS www_redirect BOOLEAN DEFAULT false;
+    `,
+  },
 ];
 
 async function migrate() {

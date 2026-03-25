@@ -9,7 +9,7 @@ const logger = require('../logger');
  * This adds proxy environment variables to the public service
  * and connects it to the beachhead-net Docker network.
  */
-function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes }) {
+function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect }) {
   if (!publicService || !domain) {
     throw new Error('publicService and domain are required for compose override');
   }
@@ -28,9 +28,9 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
         container_name: `${slug}-${publicService}${suffix}`,
         restart: 'unless-stopped',
         environment: [
-          `VIRTUAL_HOST=${domain}`,
+          `VIRTUAL_HOST=${wwwRedirect ? `${domain},www.${domain}` : domain}`,
           `VIRTUAL_PORT=${port}`,
-          `LETSENCRYPT_HOST=${domain}`,
+          `LETSENCRYPT_HOST=${wwwRedirect ? `${domain},www.${domain}` : domain}`,
         ],
         networks: ['beachhead-net'],
       },

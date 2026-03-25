@@ -1,9 +1,12 @@
 const { Router } = require('express');
+const fs = require('fs');
 const path = require('path');
 const Apps = require('../models/apps');
 const Deployments = require('../models/deployments');
+const EnvVars = require('../models/envVars');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
-const { dockerComposeDown } = require('../services/docker');
+const { dockerComposeDown, dockerComposeRecreate } = require('../services/docker');
+const { generateOverride, writeOverrideFile, readNamedVolumes } = require('../services/composeWrapper');
 const config = require('../config');
 const logger = require('../logger');
 
@@ -184,6 +187,61 @@ router.post('/:id/cancel-deployment', async (req, res) => {
   } catch (err) {
     logger.error('Failed to cancel deployments', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Enable www redirect: updates VIRTUAL_HOST/LETSENCRYPT_HOST to include www.{domain},
+// writes a vhost.d redirect config, and force-recreates the running service.
+const SAFE_HOSTNAME = /^[a-zA-Z0-9][a-zA-Z0-9.-]+[a-zA-Z0-9]$/;
+
+router.post('/:id/www', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+    if (!app.public_service || !app.domain) {
+      return res.status(400).json({ error: 'App must have a domain and public_service configured' });
+    }
+    if (!SAFE_HOSTNAME.test(app.domain)) {
+      return res.status(400).json({ error: 'Invalid domain format' });
+    }
+
+    const dep = await Deployments.findLastSuccessful(app.id, -1);
+    if (!dep) {
+      return res.status(400).json({ error: 'No successful deployment found — deploy the app first' });
+    }
+
+    // Persist flag
+    await Apps.update(app.id, { www_redirect: true });
+
+    // Regenerate override with www domains
+    const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${dep.id}`);
+    const envVars = await EnvVars.getByAppId(app.id);
+    const namedVolumes = readNamedVolumes(deployDir);
+    const overrideContent = generateOverride({
+      appSlug: app.name,
+      deployId: dep.id,
+      publicService: app.public_service,
+      domain: app.domain,
+      publicPort: app.public_port || 80,
+      envVars,
+      namedVolumes,
+      wwwRedirect: true,
+    });
+    writeOverrideFile(deployDir, overrideContent);
+
+    // Write nginx-proxy location config to redirect www → non-www
+    const vhostdDir = '/etc/nginx/vhost.d';
+    const locationFile = path.join(vhostdDir, `www.${app.domain}_location`);
+    fs.writeFileSync(locationFile, `return 301 https://${app.domain}$request_uri;\n`, 'utf8');
+
+    // Restart the service container to pick up the new env vars
+    await dockerComposeRecreate(deployDir, 'beachhead.override.yml', app.public_service);
+
+    logger.info(`WWW redirect enabled for ${app.name} (${app.domain})`);
+    res.json({ message: `WWW enabled — cert request and redirect configured for www.${app.domain}` });
+  } catch (err) {
+    logger.error('Failed to enable www redirect', err);
+    res.status(500).json({ error: err.message });
   }
 });
 

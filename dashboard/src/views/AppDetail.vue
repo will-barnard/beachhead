@@ -22,6 +22,17 @@
         <tr><td style="color: var(--muted);">Auto-Deploy</td><td>{{ app.auto_deploy ? 'Yes' : 'No' }}</td></tr>
         <tr><td style="color: var(--muted);">Stop Previous</td><td>{{ app.stop_previous !== false ? 'Yes' : 'No' }}</td></tr>
         <tr><td style="color: var(--muted);">System App</td><td>{{ app.system_app ? 'Yes' : 'No' }}</td></tr>
+        <tr>
+          <td style="color: var(--muted);">WWW Redirect</td>
+          <td>
+            <span v-if="app.www_redirect" class="badge badge-success" style="margin-right:0.5rem;">Enabled</span>
+            <span v-else style="color:var(--muted); margin-right:0.5rem;">—</span>
+            <button v-if="!app.www_redirect" class="btn btn-sm" @click="enableWww" :disabled="wwwApplying"
+                    :title="'Request cert and configure redirect for www.' + app.domain">
+              {{ wwwApplying ? 'Applying…' : 'Enable WWW' }}
+            </button>
+          </td>
+        </tr>
       </table>
     </div>
 
@@ -125,6 +136,7 @@ export default {
     newFile: { path: '', content: '' },
     editingFile: null,
     editFileContent: '',
+    wwwApplying: false,
   }),
   async created() {
     await this.load();
@@ -239,6 +251,19 @@ export default {
         this.envFiles = await api.getEnvFiles(this.app.id);
       } catch (e) {
         alert('Failed: ' + e.message);
+      }
+    },
+    async enableWww() {
+      if (!confirm(`Enable WWW redirect for ${this.app.domain}?\n\nThis will:\n• Request a certificate for www.${this.app.domain}\n• Configure a 301 redirect from www to the root domain\n• Restart the running container to apply changes`)) return;
+      this.wwwApplying = true;
+      try {
+        const result = await api.enableWwwRedirect(this.app.id);
+        alert(result.message);
+        await this.load();
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      } finally {
+        this.wwwApplying = false;
       }
     },
   },

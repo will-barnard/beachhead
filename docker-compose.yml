@@ -23,6 +23,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - deployments:/var/beachhead/deployments
       - ./.env:/app/.env.host
+      - ./nginx/vhost.d:/etc/nginx/vhost.d
     depends_on:
       beachhead-db:
         condition: service_healthy

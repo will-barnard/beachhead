@@ -125,6 +125,17 @@ async function ensureNetwork(networkName) {
   }
 }
 
+/**
+ * Docker compose up with --force-recreate for a specific service, no rebuild.
+ * Used to apply updated env vars (e.g. VIRTUAL_HOST/LETSENCRYPT_HOST) without a full redeploy.
+ */
+async function dockerComposeRecreate(cwd, overrideFile, serviceName) {
+  const args = ['compose', '-f', 'docker-compose.yml'];
+  if (overrideFile) args.push('-f', overrideFile);
+  args.push('up', '-d', '--force-recreate', '--no-build', serviceName);
+  await exec('docker', args, { cwd, timeout: 120000 });
+}
+
 module.exports = {
   exec,
   gitClone,
@@ -132,5 +143,6 @@ module.exports = {
   dockerComposeUp,
   dockerComposeDown,
   dockerComposeLogs,
+  dockerComposeRecreate,
   ensureNetwork,
 };
