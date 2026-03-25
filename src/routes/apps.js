@@ -198,8 +198,8 @@ router.post('/:id/www', async (req, res) => {
   try {
     const app = await Apps.findById(req.params.id);
     if (!app) return res.status(404).json({ error: 'App not found' });
-    if (!app.public_service || !app.domain) {
-      return res.status(400).json({ error: 'App must have a domain and public_service configured' });
+    if (!app.domain) {
+      return res.status(400).json({ error: 'App must have a domain configured' });
     }
     if (!SAFE_HOSTNAME.test(app.domain)) {
       return res.status(400).json({ error: 'Invalid domain format' });
@@ -210,19 +210,29 @@ router.post('/:id/www', async (req, res) => {
       return res.status(400).json({ error: 'No successful deployment found — deploy the app first' });
     }
 
+    const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${dep.id}`);
+
+    // public_service may live in beachhead.json rather than the DB row
+    const bhConfig = require('../services/composeWrapper').readBeachheadConfig(deployDir);
+    const publicService = bhConfig?.public_service || app.public_service;
+    const publicPort = bhConfig?.public_port || app.public_port;
+
+    if (!publicService) {
+      return res.status(400).json({ error: 'No public_service found in app config or beachhead.json' });
+    }
+
     // Persist flag
     await Apps.update(app.id, { www_redirect: true });
 
     // Regenerate override with www domains
-    const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${dep.id}`);
     const envVars = await EnvVars.getByAppId(app.id);
     const namedVolumes = readNamedVolumes(deployDir);
     const overrideContent = generateOverride({
       appSlug: app.name,
       deployId: dep.id,
-      publicService: app.public_service,
+      publicService,
       domain: app.domain,
-      publicPort: app.public_port || 80,
+      publicPort: publicPort || 80,
       envVars,
       namedVolumes,
       wwwRedirect: true,
@@ -235,7 +245,7 @@ router.post('/:id/www', async (req, res) => {
     fs.writeFileSync(locationFile, `return 301 https://${app.domain}$request_uri;\n`, 'utf8');
 
     // Restart the service container to pick up the new env vars
-    await dockerComposeRecreate(deployDir, 'beachhead.override.yml', app.public_service);
+    await dockerComposeRecreate(deployDir, 'beachhead.override.yml', publicService);
 
     logger.info(`WWW redirect enabled for ${app.name} (${app.domain})`);
     res.json({ message: `WWW enabled — cert request and redirect configured for www.${app.domain}` });
