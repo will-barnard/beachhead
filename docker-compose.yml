@@ -21,7 +21,7 @@ services:
       - LETSENCRYPT_HOST=${BEACHHEAD_DOMAIN}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - deployments:/var/beachhead/deployments
+      - /var/beachhead/deployments:/var/beachhead/deployments
       - ./.env:/app/.env.host
       - ./nginx/vhost.d:/etc/nginx/vhost.d
     depends_on:
@@ -83,7 +83,6 @@ services:
 
 volumes:
   pgdata:
-  deployments:
   certs:
   html:
   acme:

@@ -2,10 +2,11 @@ const fs = require('fs');
 const path = require('path');
 const Deployments = require('../models/deployments');
 const Apps = require('../models/apps');
+const StaticSites = require('../models/staticSites');
 const EnvVars = require('../models/envVars');
 const { EnvFiles } = require('../models/envFiles');
-const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes } = require('./composeWrapper');
-const { exec, gitClone, dockerComposeUp, dockerComposeDown, dockerComposeLogs, ensureNetwork } = require('./docker');
+const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames, readServiceVolumes, generateStatefulOverride } = require('./composeWrapper');
+const { exec, gitClone, dockerComposeUp, dockerComposeUpStateful, stopContainersUsingVolume, dockerComposeDown, dockerComposeLogs, ensureNetwork } = require('./docker');
 const { checkHealth } = require('./healthCheck');
 const config = require('../config');
 const logger = require('../logger');
@@ -56,6 +57,12 @@ async function processDeployment(deployment) {
     const bhConfig = readBeachheadConfig(deployDir);
     const publicService = bhConfig?.public_service || app.public_service;
     const publicPort = bhConfig?.public_port || app.public_port;
+    const statefulServices = Array.isArray(bhConfig?.stateful_services) ? bhConfig.stateful_services : [];
+
+    // Derive slug the same way generateOverride does (for consistent naming).
+    const slug = (app.name || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+    // Fixed network name shared between the stateful project and each transient deploy.
+    const statefulNetwork = statefulServices.length > 0 ? `${slug}-internal` : null;
 
     if (!publicService) {
       throw new Error('No public_service defined (set in app config or beachhead.json)');
@@ -74,6 +81,7 @@ async function processDeployment(deployment) {
       envVars,
       namedVolumes,
       wwwRedirect: app.www_redirect || false,
+      statefulNetwork,
     });
     writeOverrideFile(deployDir, overrideContent);
 
@@ -119,7 +127,40 @@ async function processDeployment(deployment) {
 
     // ── STARTING_CONTAINERS ──
     await transition(deployment, STATES.STARTING_CONTAINERS, 'Starting containers');
-    await dockerComposeUp(deployDir, 'beachhead.override.yml');
+
+    // Start stateful services (e.g. postgres) under a fixed project so they survive
+    // blue/green swaps and are never recreated by per-deploy compose up calls.
+    if (statefulServices.length > 0) {
+      const statefulProject = `${slug}-stateful`;
+
+      // Ensure the shared internal network exists before either project references it.
+      await ensureNetwork(statefulNetwork);
+
+      // Write a minimal overlay that pins the `internal` network to the fixed name.
+      // Both the stateful project and the transient project apply this overlay so
+      // every service (postgres, backend) is on the same Docker network.
+      const statefulOverridePath = path.join(deployDir, 'beachhead.stateful.override.yml');
+      fs.writeFileSync(statefulOverridePath, generateStatefulOverride(statefulNetwork), 'utf8');
+      fs.chmodSync(statefulOverridePath, 0o600);
+
+      // On the first deployment after stateful_services is added, the database may
+      // still be running under the old per-deploy project and holding the data
+      // directory. Stop those containers first (one-time brief restart) so the
+      // stateful project can take ownership.
+      const statefulVolumes = readServiceVolumes(deployDir, statefulServices);
+      for (const vol of statefulVolumes) {
+        await stopContainersUsingVolume(vol);
+      }
+
+      logger.info(`[deploy #${deployment.id}] Starting stateful services under project '${statefulProject}': ${statefulServices.join(', ')}`);
+      await dockerComposeUpStateful(deployDir, statefulProject, statefulServices, 'beachhead.stateful.override.yml');
+    }
+
+    // Start only the transient (non-stateful) services under the deploy-specific project.
+    // If all services are transient, pass an empty array (starts everything).
+    const allServices = readAllServiceNames(deployDir);
+    const transientServices = allServices.filter(s => !statefulServices.includes(s));
+    await dockerComposeUp(deployDir, 'beachhead.override.yml', transientServices);
 
     // ── PROXY_SETUP ──
     await transition(deployment, STATES.PROXY_SETUP, `Proxy configured for ${app.domain} -> ${publicService}:${publicPort || 80}`);
@@ -266,11 +307,57 @@ async function startupCleanup() {
   }
 }
 
+/**
+ * On startup: ensure all static site containers are running.
+ * Containers are created with --restart unless-stopped, so they usually survive
+ * reboots. This handles cases where containers were removed or Docker lost state.
+ */
+async function startupStaticSites() {
+  try {
+    const sites = await StaticSites.findAll();
+    for (const site of sites) {
+      const name = `static-site-${site.id}`;
+      const root = path.join(config.deploy.baseDir, 'static-sites', `site-${site.id}`, 'public');
+
+      // Skip if no files have been uploaded yet
+      if (!fs.existsSync(root)) continue;
+
+      // Check if container is already running
+      try {
+        const { stdout } = await exec('docker', ['inspect', '-f', '{{.State.Running}}', name], { timeout: 10000 });
+        if (stdout.trim() === 'true') continue;
+      } catch { /* container doesn't exist or inspect failed */ }
+
+      // Container not running — start it
+      try {
+        logger.info(`[startup] Starting static site container: ${name} for ${site.domain}`);
+        const hosts = site.www_redirect ? `${site.domain},www.${site.domain}` : site.domain;
+        // Remove existing container if present but stopped
+        try { await exec('docker', ['rm', '-f', name], { timeout: 10000 }); } catch { /* ok */ }
+        await exec('docker', ['run', '-d',
+          '--name', name,
+          '--restart', 'unless-stopped',
+          '--network', config.deploy.dockerNetwork,
+          '-e', `VIRTUAL_HOST=${hosts}`,
+          '-e', 'VIRTUAL_PORT=80',
+          '-e', `LETSENCRYPT_HOST=${hosts}`,
+          '-v', `${root}:/usr/share/nginx/html:ro`,
+          'nginx:alpine',
+        ], { timeout: 30000 });
+      } catch (err) {
+        logger.warn(`[startup] Could not start static site ${name}: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    logger.error('Static sites startup recovery failed', err);
+  }
+}
+
 function start() {
   if (running) return;
   running = true;
   logger.info('Deployment worker started');
-  startupCleanup().finally(() => poll());
+  Promise.all([startupCleanup(), startupStaticSites()]).finally(() => poll());
 }
 
 function stop() {

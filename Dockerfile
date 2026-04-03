@@ -9,7 +9,7 @@ RUN npm run build
 # Stage 2: production API image
 FROM node:20-alpine
 
-RUN apk add --no-cache git docker-cli docker-cli-compose
+RUN apk add --no-cache git docker-cli docker-cli-compose unzip
 
 WORKDIR /app
 

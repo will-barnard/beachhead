@@ -273,6 +273,9 @@ ok "Startup services installed (docker-beachhead-net.service, beachhead.service)
 
 # ── Start services ───────────────────────────
 
+info "Ensuring deployment directory exists..."
+sudo mkdir -p /var/beachhead/deployments
+
 info "Building and starting Beachhead..."
 ${DOCKER_SUDO} docker compose up -d --build 2>&1 | tail -10
 

@@ -47,4 +47,25 @@ export default {
   connectAuth: (data) => request('/bootstrap/connect-auth', { method: 'POST', body: data }),
   activateAuth: () => request('/bootstrap/activate-auth', { method: 'POST', body: {} }),
   getBootstrapStatus: () => request('/bootstrap/status'),
+
+  // Static sites
+  getStaticSites: () => request('/static-sites'),
+  getStaticSite: (id) => request(`/static-sites/${id}`),
+  createStaticSite: (data) => request('/static-sites', { method: 'POST', body: data }),
+  deleteStaticSite: (id) => request(`/static-sites/${id}`, { method: 'DELETE' }),
+  deployStaticSite: (id) => request(`/static-sites/${id}/deploy`, { method: 'POST', body: {} }),
+  enableStaticSiteWww: (id) => request(`/static-sites/${id}/www`, { method: 'POST', body: {} }),
+  async uploadStaticSite(id, file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch(`${BASE}/static-sites/${id}/upload`, { method: 'POST', body: formData });
+    const data = await res.json().catch(() => null);
+    if (res.status === 401) {
+      const url = data?.loginUrl;
+      if (url) window.location.href = `${url}?return_url=${encodeURIComponent(window.location.href)}`;
+      throw new Error(data?.error || 'Authentication required');
+    }
+    if (!res.ok) throw new Error(data?.error || `Upload failed: ${res.status}`);
+    return data;
+  },
 };

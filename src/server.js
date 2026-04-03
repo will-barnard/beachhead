@@ -14,6 +14,7 @@ const envVarsRouter = require('./routes/envVars');
 const envFilesRouter = require('./routes/envFiles');
 const webhooksRouter = require('./routes/webhooks');
 const bootstrapRouter = require('./routes/bootstrap');
+const staticSitesRouter = require('./routes/staticSites');
 
 const app = express();
 
@@ -58,6 +59,7 @@ app.use('/api/apps', appsRouter);
 app.use('/api/apps', envVarsRouter);
 app.use('/api/apps', envFilesRouter);
 app.use('/api/bootstrap', bootstrapRouter);
+app.use('/api/static-sites', staticSitesRouter);
 
 // Health endpoint
 app.get('/api/health', (req, res) => {

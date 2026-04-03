@@ -56,12 +56,61 @@ async function dockerComposeBuild(cwd, overrideFile) {
 
 /**
  * Docker compose up.
+ * Pass `services` to only start specific services (used to exclude stateful singletons).
+ * When a services list is given, --no-deps prevents Docker Compose from starting
+ * unlisted dependency services (e.g. postgres via depends_on) — stateful services
+ * are already managed separately and must not be started by the transient project.
  */
-async function dockerComposeUp(cwd, overrideFile) {
+async function dockerComposeUp(cwd, overrideFile, services = []) {
   const args = ['compose', '-f', 'docker-compose.yml'];
   if (overrideFile) args.push('-f', overrideFile);
   args.push('up', '-d', '--build');
+  if (services.length > 0) {
+    args.push('--no-deps'); // stateful services managed separately
+    args.push(...services);
+  }
   await exec('docker', args, { cwd, timeout: 600000 });
+}
+
+/**
+ * Stop any running containers that have a specific named volume mounted.
+ * Called before starting a stateful service for the first time to migrate it
+ * from an unmanaged per-deploy container to the fixed stateful project.
+ * Returns the number of containers stopped.
+ */
+async function stopContainersUsingVolume(volumeName) {
+  try {
+    const { stdout } = await exec('docker', ['ps', '--filter', `volume=${volumeName}`, '--format', '{{.Names}}'], { timeout: 10000 });
+    const containers = stdout.trim().split('\n').filter(Boolean);
+    for (const name of containers) {
+      logger.warn(`Stopping container '${name}' holding volume '${volumeName}' — migrating to stateful project (one-time)`);
+      try {
+        await exec('docker', ['stop', name], { timeout: 30000 });
+      } catch (e) {
+        logger.warn(`Could not stop container '${name}': ${e.message}`);
+      }
+    }
+    return containers.length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Docker compose up for stateful singleton services (e.g. postgres).
+ * Uses a fixed project name so the containers survive across deploys and are
+ * never recreated by the per-deploy blue/green swap.
+ *
+ * --no-recreate: if the container is already running, leave it untouched.
+ * --wait:        block until the service's healthcheck passes before returning,
+ *                so transient services (backend) start after the DB is ready.
+ */
+async function dockerComposeUpStateful(cwd, projectName, services, overrideFile) {
+  if (!services || services.length === 0) return;
+  const args = ['compose', '-p', projectName, '-f', 'docker-compose.yml'];
+  if (overrideFile) args.push('-f', overrideFile);
+  args.push('up', '-d', '--no-recreate', '--wait', ...services);
+  await exec('docker', args, { cwd, timeout: 120000 }); // 2 min — just waiting for healthcheck
 }
 
 /**
@@ -141,6 +190,8 @@ module.exports = {
   gitClone,
   dockerComposeBuild,
   dockerComposeUp,
+  dockerComposeUpStateful,
+  stopContainersUsingVolume,
   dockerComposeDown,
   dockerComposeLogs,
   dockerComposeRecreate,

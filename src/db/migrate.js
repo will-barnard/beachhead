@@ -91,6 +91,19 @@ const MIGRATIONS = [
       ALTER TABLE apps ADD COLUMN IF NOT EXISTS www_redirect BOOLEAN DEFAULT false;
     `,
   },
+  {
+    name: '009_create_static_sites',
+    sql: `
+      CREATE TABLE IF NOT EXISTS static_sites (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        domain TEXT NOT NULL UNIQUE,
+        www_redirect BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `,
+  },
 ];
 
 async function migrate() {

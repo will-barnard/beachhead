@@ -9,7 +9,7 @@ const logger = require('../logger');
  * This adds proxy environment variables to the public service
  * and connects it to the beachhead-net Docker network.
  */
-function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect }) {
+function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork }) {
   if (!publicService || !domain) {
     throw new Error('publicService and domain are required for compose override');
   }
@@ -21,6 +21,21 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
   // Include deployment ID so each deploy has unique container names (avoids name conflicts
   // when old containers are still running during the new deploy's startup phase).
   const suffix = deployId ? `-d${deployId}` : '';
+
+  const networksSection = {
+    'beachhead-net': {
+      external: true,
+    },
+  };
+  // When stateful services are present, give the internal network a fixed name so
+  // stateful containers (different compose project) and transient containers share
+  // the same underlying Docker network and can reach each other by hostname.
+  if (statefulNetwork) {
+    networksSection.internal = {
+      external: true,
+      name: statefulNetwork,
+    };
+  }
 
   const override = {
     services: {
@@ -35,11 +50,7 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
         networks: ['beachhead-net'],
       },
     },
-    networks: {
-      'beachhead-net': {
-        external: true,
-      },
-    },
+    networks: networksSection,
   };
 
   // Mark any explicitly named volumes as external so Docker Compose doesn't
@@ -116,8 +127,82 @@ function readNamedVolumes(deployDir) {
 }
 
 /**
+ * Read the resolved Docker volume names used by specific services.
+ * Returns an array of name strings (from the `name:` key in the top-level volumes section).
+ * Used to detect volume conflicts before migrating a service to the stateful project.
+ */
+function readServiceVolumes(deployDir, serviceNames) {
+  const composePath = path.join(deployDir, 'docker-compose.yml');
+  if (!fs.existsSync(composePath)) return [];
+
+  try {
+    const raw = fs.readFileSync(composePath, 'utf8');
+    const doc = yaml.load(raw);
+    if (!doc) return [];
+
+    const topLevelVolumes = doc.volumes || {};
+    const result = [];
+
+    for (const serviceName of serviceNames) {
+      const service = doc.services?.[serviceName];
+      if (!service?.volumes) continue;
+
+      for (const vol of service.volumes) {
+        // vol can be a string like "postgres-data:/var/run/..." or an object with .source
+        const volKey = typeof vol === 'string' ? vol.split(':')[0] : vol?.source;
+        if (!volKey) continue;
+        const volConfig = topLevelVolumes[volKey];
+        if (volConfig?.name) {
+          result.push(volConfig.name);
+        }
+      }
+    }
+
+    return [...new Set(result)];
+  } catch (err) {
+    logger.warn(`Failed to read service volumes: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * Generate a minimal compose override that gives the `internal` network a fixed
+ * external name. Used when starting stateful services so they join the same
+ * Docker network as the transient services in the per-deploy project.
+ */
+function generateStatefulOverride(statefulNetwork) {
+  return yaml.dump({
+    networks: {
+      internal: {
+        external: true,
+        name: statefulNetwork,
+      },
+    },
+  }, { lineWidth: -1 });
+}
+
+/**
+ * Read all service names from a docker-compose.yml.
+ * Returns an array of service name strings.
+ */
+function readAllServiceNames(deployDir) {
+  const composePath = path.join(deployDir, 'docker-compose.yml');
+  if (!fs.existsSync(composePath)) return [];
+
+  try {
+    const raw = fs.readFileSync(composePath, 'utf8');
+    const doc = yaml.load(raw);
+    if (!doc || !doc.services) return [];
+    return Object.keys(doc.services);
+  } catch (err) {
+    logger.warn(`Failed to read service names from docker-compose.yml: ${err.message}`);
+    return [];
+  }
+}
+
+/**
  * Read beachhead.json from a repo if it exists.
- * Returns metadata for the app (public_service, public_port, health_check).
+ * Returns metadata for the app (public_service, public_port, health_check, stateful_services).
  */
 function readBeachheadConfig(deployDir) {
   const configPath = path.join(deployDir, 'beachhead.json');
@@ -137,4 +222,7 @@ module.exports = {
   writeOverrideFile,
   readBeachheadConfig,
   readNamedVolumes,
+  readAllServiceNames,
+  readServiceVolumes,
+  generateStatefulOverride,
 };
