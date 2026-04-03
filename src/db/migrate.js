@@ -104,6 +104,21 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    name: '010_create_app_endpoints',
+    sql: `
+      CREATE TABLE IF NOT EXISTS app_endpoints (
+        id SERIAL PRIMARY KEY,
+        app_id INT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        service TEXT NOT NULL,
+        domain TEXT NOT NULL UNIQUE,
+        port INTEGER DEFAULT 80,
+        www_redirect BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_app_endpoints_app_service ON app_endpoints(app_id, service);
+    `,
+  },
 ];
 
 async function migrate() {

@@ -36,6 +36,47 @@
       </table>
     </div>
 
+    <!-- Additional Endpoints -->
+    <div class="card">
+      <h3 style="margin-bottom:0.75rem;">Additional Endpoints</h3>
+      <p style="color:var(--muted); font-size:0.8rem; margin-bottom:0.75rem;">
+        Map additional docker-compose services to their own subdomains. Each endpoint gets its own SSL certificate.
+      </p>
+      <div v-if="endpoints.length === 0 && !addingEndpoint" style="color:var(--muted); font-size:0.85rem;">No additional endpoints configured.</div>
+      <div v-for="ep in endpoints" :key="ep.id" style="display:flex; justify-content:space-between; align-items:center; padding:0.5rem 0; border-bottom:1px solid var(--border);">
+        <div>
+          <code style="font-size:0.85rem;">{{ ep.service }}</code>
+          <span style="color:var(--muted); margin:0 0.5rem;">→</span>
+          <span style="font-size:0.85rem;">{{ ep.domain }}:{{ ep.port }}</span>
+          <span v-if="ep.www_redirect" class="badge badge-success" style="margin-left:0.5rem; font-size:0.65rem;">www</span>
+        </div>
+        <div style="display:flex; gap:0.5rem; align-items:center;">
+          <button v-if="!ep.www_redirect" class="btn btn-sm" @click="enableEndpointWww(ep)"
+                  :disabled="ep._wwwApplying" :title="'Enable www.' + ep.domain">
+            {{ ep._wwwApplying ? '…' : 'WWW' }}
+          </button>
+          <button class="btn btn-danger btn-sm" @click="removeEndpoint(ep)">×</button>
+        </div>
+      </div>
+      <div v-if="addingEndpoint" style="display:flex; gap:0.5rem; margin-top:0.75rem; align-items:flex-end;">
+        <div style="flex:1;">
+          <label style="font-size:0.75rem; color:var(--muted);">Service</label>
+          <input v-model="newEndpoint.service" placeholder="admin" />
+        </div>
+        <div style="flex:2;">
+          <label style="font-size:0.75rem; color:var(--muted);">Domain</label>
+          <input v-model="newEndpoint.domain" placeholder="admin.example.com" />
+        </div>
+        <div style="flex:0.5;">
+          <label style="font-size:0.75rem; color:var(--muted);">Port</label>
+          <input v-model.number="newEndpoint.port" type="number" placeholder="80" />
+        </div>
+        <button class="btn btn-sm" @click="addEndpoint">Add</button>
+        <button class="btn btn-sm" @click="addingEndpoint = false">Cancel</button>
+      </div>
+      <button v-if="!addingEndpoint" class="btn btn-sm" style="margin-top:0.75rem;" @click="addingEndpoint = true">+ Add Endpoint</button>
+    </div>
+
     <!-- Env Files -->
     <div class="card">
       <h3 style="margin-bottom:0.75rem;">Env Files</h3>
@@ -128,6 +169,7 @@ export default {
     deployments: [],
     envVars: [],
     envFiles: [],
+    endpoints: [],
     loading: true,
     error: null,
     selectedDeploy: null,
@@ -137,6 +179,8 @@ export default {
     editingFile: null,
     editFileContent: '',
     wwwApplying: false,
+    addingEndpoint: false,
+    newEndpoint: { service: '', domain: '', port: 80 },
   }),
   async created() {
     await this.load();
@@ -145,16 +189,18 @@ export default {
     async load() {
       try {
         const id = this.$route.params.id;
-        const [app, deployments, envVars, envFiles] = await Promise.all([
+        const [app, deployments, envVars, envFiles, endpoints] = await Promise.all([
           api.getApp(id),
           api.getDeployments(id),
           api.getEnvVars(id),
           api.getEnvFiles(id),
+          api.getEndpoints(id),
         ]);
         this.app = app;
         this.deployments = deployments;
         this.envVars = envVars;
         this.envFiles = envFiles;
+        this.endpoints = endpoints;
       } catch (e) {
         this.error = e.message;
       } finally {
@@ -264,6 +310,39 @@ export default {
         alert('Failed: ' + e.message);
       } finally {
         this.wwwApplying = false;
+      }
+    },
+    async addEndpoint() {
+      if (!this.newEndpoint.service || !this.newEndpoint.domain) return;
+      try {
+        await api.addEndpoint(this.app.id, this.newEndpoint);
+        this.newEndpoint = { service: '', domain: '', port: 80 };
+        this.addingEndpoint = false;
+        this.endpoints = await api.getEndpoints(this.app.id);
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      }
+    },
+    async removeEndpoint(ep) {
+      if (!confirm(`Remove endpoint ${ep.service} → ${ep.domain}?`)) return;
+      try {
+        await api.deleteEndpoint(this.app.id, ep.id);
+        this.endpoints = await api.getEndpoints(this.app.id);
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      }
+    },
+    async enableEndpointWww(ep) {
+      if (!confirm(`Enable WWW redirect for ${ep.domain}?`)) return;
+      ep._wwwApplying = true;
+      try {
+        const result = await api.enableEndpointWww(this.app.id, ep.id);
+        alert(result.message);
+        this.endpoints = await api.getEndpoints(this.app.id);
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      } finally {
+        ep._wwwApplying = false;
       }
     },
   },

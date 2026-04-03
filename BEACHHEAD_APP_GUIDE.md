@@ -31,6 +31,19 @@ Tells Beachhead which service exposes HTTP traffic and on what port.
 - `public_service` must match a service name in your `docker-compose.yml`
 - `public_port` is the port that service listens on inside the container
 
+### Multiple public services
+
+If your app has more than one public-facing service (e.g. a user frontend and an admin panel), set the primary one in `beachhead.json` and configure additional endpoints in the Beachhead dashboard under **Additional Endpoints**.
+
+Each endpoint maps a docker-compose service to its own subdomain with automatic SSL:
+
+| Service | Domain | Port |
+|---------|--------|------|
+| `frontend` (primary) | app.example.com | 80 |
+| `admin` | admin.example.com | 80 |
+
+The primary service's domain is set when you create the app. Additional endpoints are added in the app detail page. Each service gets its own `VIRTUAL_HOST` / `LETSENCRYPT_HOST` in the compose override. WWW redirect can be enabled independently per endpoint.
+
 ---
 
 ## `docker-compose.yml` requirements

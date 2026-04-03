@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const Deployments = require('../models/deployments');
 const Apps = require('../models/apps');
+const AppEndpoints = require('../models/appEndpoints');
 const StaticSites = require('../models/staticSites');
 const EnvVars = require('../models/envVars');
 const { EnvFiles } = require('../models/envFiles');
@@ -72,6 +73,16 @@ async function processDeployment(deployment) {
     await transition(deployment, STATES.ENV_INJECTION, 'Injecting environment variables');
     const envVars = await EnvVars.getByAppId(app.id);
     const namedVolumes = readNamedVolumes(deployDir);
+
+    // Load additional endpoints for multi-service apps
+    const endpoints = await AppEndpoints.findByAppId(app.id);
+    const additionalEndpoints = endpoints.map(ep => ({
+      service: ep.service,
+      domain: ep.domain,
+      port: ep.port || 80,
+      wwwRedirect: ep.www_redirect || false,
+    }));
+
     const overrideContent = generateOverride({
       appSlug: app.name,
       deployId: deployment.id,
@@ -82,6 +93,7 @@ async function processDeployment(deployment) {
       namedVolumes,
       wwwRedirect: app.www_redirect || false,
       statefulNetwork,
+      additionalEndpoints,
     });
     writeOverrideFile(deployDir, overrideContent);
 

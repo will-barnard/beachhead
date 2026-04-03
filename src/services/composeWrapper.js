@@ -6,10 +6,13 @@ const logger = require('../logger');
 
 /**
  * Generate beachhead.override.yml for a deployed app.
- * This adds proxy environment variables to the public service
- * and connects it to the beachhead-net Docker network.
+ * This adds proxy environment variables to the public service(s)
+ * and connects them to the beachhead-net Docker network.
+ *
+ * additionalEndpoints: optional array of { service, domain, port, wwwRedirect }
+ * for apps with multiple public-facing services on different subdomains.
  */
-function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork }) {
+function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints }) {
   if (!publicService || !domain) {
     throw new Error('publicService and domain are required for compose override');
   }
@@ -37,21 +40,54 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
     };
   }
 
+  const primaryHosts = wwwRedirect ? `${domain},www.${domain}` : domain;
+
   const override = {
     services: {
       [publicService]: {
         container_name: `${slug}-${publicService}${suffix}`,
         restart: 'unless-stopped',
         environment: [
-          `VIRTUAL_HOST=${wwwRedirect ? `${domain},www.${domain}` : domain}`,
+          `VIRTUAL_HOST=${primaryHosts}`,
           `VIRTUAL_PORT=${port}`,
-          `LETSENCRYPT_HOST=${wwwRedirect ? `${domain},www.${domain}` : domain}`,
+          `LETSENCRYPT_HOST=${primaryHosts}`,
         ],
         networks: ['beachhead-net'],
       },
     },
     networks: networksSection,
   };
+
+  // Additional public endpoints (each gets its own VIRTUAL_HOST/LETSENCRYPT_HOST)
+  if (additionalEndpoints && additionalEndpoints.length > 0) {
+    for (const ep of additionalEndpoints) {
+      const epHosts = ep.wwwRedirect ? `${ep.domain},www.${ep.domain}` : ep.domain;
+      const epPort = ep.port || 80;
+
+      if (override.services[ep.service]) {
+        // Service already exists (e.g. from primary) — merge env vars
+        override.services[ep.service].environment.push(
+          `VIRTUAL_HOST=${epHosts}`,
+          `VIRTUAL_PORT=${epPort}`,
+          `LETSENCRYPT_HOST=${epHosts}`,
+        );
+        if (!override.services[ep.service].networks.includes('beachhead-net')) {
+          override.services[ep.service].networks.push('beachhead-net');
+        }
+      } else {
+        override.services[ep.service] = {
+          container_name: `${slug}-${ep.service}${suffix}`,
+          restart: 'unless-stopped',
+          environment: [
+            `VIRTUAL_HOST=${epHosts}`,
+            `VIRTUAL_PORT=${epPort}`,
+            `LETSENCRYPT_HOST=${epHosts}`,
+          ],
+          networks: ['beachhead-net'],
+        };
+      }
+    }
+  }
 
   // Mark any explicitly named volumes as external so Docker Compose doesn't
   // try to manage them per-project (which causes warnings/conflicts across deploys).

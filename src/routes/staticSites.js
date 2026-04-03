@@ -5,6 +5,7 @@ const multer = require('multer');
 const { execFile } = require('child_process');
 const StaticSites = require('../models/staticSites');
 const Apps = require('../models/apps');
+const AppEndpoints = require('../models/appEndpoints');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
 const { exec } = require('../services/docker');
 const config = require('../config');
@@ -113,10 +114,14 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'name and domain are required' });
     }
 
-    // Check uniqueness across both apps and static sites
+    // Check uniqueness across apps, app endpoints, and static sites
     const existingApp = await Apps.findByDomain(domain);
     if (existingApp) {
       return res.status(409).json({ error: `Domain already used by app "${existingApp.name}"` });
+    }
+    const existingEndpoint = await AppEndpoints.findByDomain(domain);
+    if (existingEndpoint) {
+      return res.status(409).json({ error: 'Domain already used by an app endpoint' });
     }
     const existingSite = await StaticSites.findByDomain(domain);
     if (existingSite) {
