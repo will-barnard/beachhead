@@ -33,16 +33,59 @@ Tells Beachhead which service exposes HTTP traffic and on what port.
 
 ### Multiple public services
 
-If your app has more than one public-facing service (e.g. a user frontend and an admin panel), set the primary one in `beachhead.json` and configure additional endpoints in the Beachhead dashboard under **Additional Endpoints**.
+If your app has more than one public-facing service (e.g. a user-facing frontend and an admin panel on separate subdomains), Beachhead handles each with its own domain and SSL certificate.
 
-Each endpoint maps a docker-compose service to its own subdomain with automatic SSL:
+**How it works:**
+
+1. `beachhead.json` declares the **primary** service as normal.
+2. Additional services are registered in the Beachhead dashboard under the app's **Additional Endpoints** section — you add them after creating the app (typically after the first deploy, once you know the compose service names).
+3. Beachhead generates one `VIRTUAL_HOST` / `LETSENCRYPT_HOST` block per service in the compose override. nginx-proxy routes traffic to each container independently.
+
+**Example setup** — app with a user frontend and a separate admin panel:
+
+```json
+// beachhead.json
+{
+  "public_service": "frontend",
+  "public_port": 80
+}
+```
+
+```yaml
+# docker-compose.yml (relevant section)
+services:
+  frontend:
+    build: ./frontend
+    expose:
+      - "80"
+
+  admin:
+    build: ./admin
+    expose:
+      - "80"
+```
+
+In the Beachhead dashboard, after the first deploy:
+- Go to the app detail page
+- Under **Additional Endpoints**, click **Add Endpoint**
+- Set **Service** to `admin`, **Domain** to `admin.example.com`, **Port** to `80`
+- Save — Beachhead regenerates the override and live-restarts the `admin` container with the new proxy configuration
+
+The resulting override provides each service with its own routing:
 
 | Service | Domain | Port |
 |---------|--------|------|
 | `frontend` (primary) | app.example.com | 80 |
 | `admin` | admin.example.com | 80 |
 
-The primary service's domain is set when you create the app. Additional endpoints are added in the app detail page. Each service gets its own `VIRTUAL_HOST` / `LETSENCRYPT_HOST` in the compose override. WWW redirect can be enabled independently per endpoint.
+**Rules:**
+- Each service must be on the internal network (same `networks: [internal]` rule applies to all services, including non-primary public ones)
+- Each domain must be unique across all apps and sites on the Beachhead instance
+- You cannot add an endpoint for the primary service — update the app's domain directly instead
+- WWW redirect (`www.domain.com → domain.com`) can be enabled independently per endpoint
+- Endpoints are applied on the next deploy automatically; if the app is already running, Beachhead live-restarts the affected container
+
+**Common failure mode:** If a secondary service doesn't appear in nginx-proxy, confirm it has `expose:` set and is on the same `beachhead-net` external network (Beachhead's override handles this automatically via the `networks` block).
 
 ---
 
