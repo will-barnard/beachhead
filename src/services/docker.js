@@ -175,6 +175,26 @@ async function ensureNetwork(networkName) {
 }
 
 /**
+ * Stop all running containers belonging to a Docker Compose project by label.
+ * Used as a fallback when the original compose files are unavailable or compose down fails.
+ * Safer than compose down because it doesn't depend on matching compose file state.
+ */
+async function stopComposeProject(projectName) {
+  try {
+    const { stdout } = await exec('docker', ['ps', '-q', '--filter', `label=com.docker.compose.project=${projectName}`], { timeout: 10000 });
+    const ids = stdout.trim().split('\n').filter(Boolean);
+    if (ids.length > 0) {
+      logger.info(`Stopping ${ids.length} container(s) for project '${projectName}' via label`);
+      await exec('docker', ['stop', ...ids], { timeout: 60000 });
+    }
+    return ids.length;
+  } catch (err) {
+    logger.warn(`stopComposeProject(${projectName}) failed: ${err.message}`);
+    return 0;
+  }
+}
+
+/**
  * Docker compose up with --force-recreate for a specific service, no rebuild.
  * Used to apply updated env vars (e.g. VIRTUAL_HOST/LETSENCRYPT_HOST) without a full redeploy.
  */
@@ -209,6 +229,7 @@ module.exports = {
   dockerComposeUpNoBuild,
   dockerComposeUpStateful,
   stopContainersUsingVolume,
+  stopComposeProject,
   dockerComposeDown,
   dockerComposeLogs,
   dockerComposeRecreate,

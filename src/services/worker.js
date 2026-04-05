@@ -7,7 +7,7 @@ const StaticSites = require('../models/staticSites');
 const EnvVars = require('../models/envVars');
 const { EnvFiles } = require('../models/envFiles');
 const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames, readServiceVolumes, generateStatefulOverride } = require('./composeWrapper');
-const { exec, gitClone, dockerComposeUp, dockerComposeUpStateful, stopContainersUsingVolume, dockerComposeDown, dockerComposeLogs, ensureNetwork } = require('./docker');
+const { exec, gitClone, dockerComposeUp, dockerComposeUpStateful, stopContainersUsingVolume, stopComposeProject, dockerComposeDown, dockerComposeLogs, ensureNetwork } = require('./docker');
 const { checkHealth } = require('./healthCheck');
 const config = require('../config');
 const logger = require('../logger');
@@ -204,13 +204,21 @@ async function processDeployment(deployment) {
       if (prevDeployment && prevDeployment.id !== deployment.id) {
         const prevDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${prevDeployment.id}`);
         const prevOverride = path.join(prevDir, 'beachhead.override.yml');
-        if (fs.existsSync(prevOverride)) {
-          try {
-            logger.info(`[deploy #${deployment.id}] Stopping previous deployment #${prevDeployment.id}`);
+        const prevProjectName = path.basename(prevDir); // e.g. "deploy-122"
+        logger.info(`[deploy #${deployment.id}] Stopping previous deployment #${prevDeployment.id}`);
+        try {
+          if (fs.existsSync(prevOverride)) {
             await dockerComposeDown(prevDir, 'beachhead.override.yml');
-          } catch (stopErr) {
-            logger.warn(`[deploy #${deployment.id}] Could not stop previous deployment: ${stopErr.message}`);
+          } else {
+            logger.warn(`[deploy #${deployment.id}] Override file missing for #${prevDeployment.id} — using label-based stop`);
+            await stopComposeProject(prevProjectName);
           }
+        } catch (stopErr) {
+          // compose down failed (e.g. partial state from a previous migration) — fall back
+          // to stopping containers directly by their compose project label so stale
+          // containers don't remain registered with nginx-proxy.
+          logger.warn(`[deploy #${deployment.id}] Compose down failed: ${stopErr.message} — falling back to label-based stop`);
+          await stopComposeProject(prevProjectName);
         }
       }
     }
