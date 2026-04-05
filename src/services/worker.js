@@ -190,10 +190,18 @@ async function processDeployment(deployment) {
     // ── SUCCESS ──
     await transition(deployment, STATES.SUCCESS, 'Deployment successful');
 
+    // Record this as the active deployment before tearing down the old one.
+    await Apps.update(app.id, { active_deployment_id: deployment.id });
+
     // Stop the previous deployment's containers now that the new one is healthy.
     if (app.stop_previous !== false) {
-      const prevDeployment = await Deployments.findLastSuccessful(app.id, deployment.id);
-      if (prevDeployment) {
+      // Prefer the explicitly tracked active deployment over a DB scan so
+      // rollbacks are correctly accounted for.
+      const prevDepId = app.active_deployment_id;
+      const prevDeployment = prevDepId
+        ? await Deployments.findById(prevDepId)
+        : await Deployments.findLastSuccessful(app.id, deployment.id);
+      if (prevDeployment && prevDeployment.id !== deployment.id) {
         const prevDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${prevDeployment.id}`);
         const prevOverride = path.join(prevDir, 'beachhead.override.yml');
         if (fs.existsSync(prevOverride)) {

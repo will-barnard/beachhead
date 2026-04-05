@@ -119,6 +119,12 @@ const MIGRATIONS = [
       CREATE UNIQUE INDEX IF NOT EXISTS idx_app_endpoints_app_service ON app_endpoints(app_id, service);
     `,
   },
+  {
+    name: '011_add_active_deployment_to_apps',
+    sql: `
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS active_deployment_id INT REFERENCES deployments(id) ON DELETE SET NULL;
+    `,
+  },
 ];
 
 async function migrate() {

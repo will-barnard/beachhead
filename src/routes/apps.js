@@ -7,8 +7,9 @@ const Deployments = require('../models/deployments');
 const EnvVars = require('../models/envVars');
 const StaticSites = require('../models/staticSites');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
-const { dockerComposeDown, dockerComposeRecreate } = require('../services/docker');
-const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes } = require('../services/composeWrapper');
+const { dockerComposeDown, dockerComposeRecreate, dockerComposeUpNoBuild, ensureNetwork } = require('../services/docker');
+const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames } = require('../services/composeWrapper');
+const { checkHealth } = require('../services/healthCheck');
 const config = require('../config');
 const logger = require('../logger');
 
@@ -193,6 +194,72 @@ router.post('/:id/cancel-deployment', async (req, res) => {
   } catch (err) {
     logger.error('Failed to cancel deployments', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Roll back to a specific successful deployment
+router.post('/:id/deployments/:deployId/rollback', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+
+    const targetDep = await Deployments.findById(req.params.deployId);
+    if (!targetDep || targetDep.app_id !== app.id) {
+      return res.status(404).json({ error: 'Deployment not found' });
+    }
+    if (targetDep.state !== 'SUCCESS') {
+      return res.status(400).json({ error: 'Can only roll back to a successful deployment' });
+    }
+    if (app.active_deployment_id && targetDep.id === app.active_deployment_id) {
+      return res.status(400).json({ error: 'This deployment is already active' });
+    }
+
+    const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${targetDep.id}`);
+    if (!fs.existsSync(path.join(deployDir, 'beachhead.override.yml'))) {
+      return res.status(400).json({ error: 'Deploy files not found on disk — cannot roll back to this deployment' });
+    }
+
+    const bhConfig = readBeachheadConfig(deployDir);
+    const statefulServices = Array.isArray(bhConfig?.stateful_services) ? bhConfig.stateful_services : [];
+    const allServices = readAllServiceNames(deployDir);
+    const transientServices = allServices.filter(s => !statefulServices.includes(s));
+
+    // Ensure the proxy network exists before starting containers
+    await ensureNetwork(config.deploy.dockerNetwork);
+
+    // Start the target deployment's containers without rebuilding.
+    // Images must still be in the local Docker cache from when this deployment ran.
+    await dockerComposeUpNoBuild(deployDir, 'beachhead.override.yml', transientServices);
+
+    // Verify the deployment is healthy before committing to it
+    const healthPath = bhConfig?.health_check || '/';
+    const healthy = await checkHealth(app.domain, { path: healthPath });
+    if (!healthy) {
+      try { await dockerComposeDown(deployDir, 'beachhead.override.yml'); } catch {}
+      return res.status(502).json({ error: `Health check failed — deployment #${targetDep.id} may have stale images` });
+    }
+
+    // Stop the previously active deployment now that the rollback is healthy
+    const prevDepId = app.active_deployment_id;
+    if (prevDepId && prevDepId !== targetDep.id) {
+      const prevDep = await Deployments.findById(prevDepId);
+      if (prevDep) {
+        const prevDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${prevDep.id}`);
+        try {
+          await dockerComposeDown(prevDir, 'beachhead.override.yml');
+        } catch (err) {
+          logger.warn(`Rollback: could not stop previous containers: ${err.message}`);
+        }
+      }
+    }
+
+    await Apps.update(app.id, { active_deployment_id: targetDep.id });
+
+    logger.info(`Rollback complete for ${app.name}: now running deploy #${targetDep.id}`);
+    res.json({ message: `Rolled back to deployment #${targetDep.id}` });
+  } catch (err) {
+    logger.error('Rollback failed', err);
+    res.status(500).json({ error: err.message });
   }
 });
 

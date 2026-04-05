@@ -185,11 +185,28 @@ async function dockerComposeRecreate(cwd, overrideFile, serviceName) {
   await exec('docker', args, { cwd, timeout: 120000 });
 }
 
+/**
+ * Docker compose up without building — restarts existing images.
+ * Used for rollbacks where the images are already in the local Docker cache.
+ * Mirrors dockerComposeUp but omits --build so no rebuild is attempted.
+ */
+async function dockerComposeUpNoBuild(cwd, overrideFile, services = []) {
+  const args = ['compose', '-f', 'docker-compose.yml'];
+  if (overrideFile) args.push('-f', overrideFile);
+  args.push('up', '-d', '--no-build');
+  if (services.length > 0) {
+    args.push('--no-deps');
+    args.push(...services);
+  }
+  await exec('docker', args, { cwd, timeout: 300000 });
+}
+
 module.exports = {
   exec,
   gitClone,
   dockerComposeBuild,
   dockerComposeUp,
+  dockerComposeUpNoBuild,
   dockerComposeUpStateful,
   stopContainersUsingVolume,
   dockerComposeDown,

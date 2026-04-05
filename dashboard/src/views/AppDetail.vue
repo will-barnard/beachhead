@@ -138,15 +138,26 @@
     <div class="card">
       <h3 style="margin-bottom:0.75rem;">Deployments</h3>
       <div v-if="deployments.length === 0" style="color:var(--muted); font-size:0.85rem;">No deployments yet.</div>
-      <div v-for="d in deployments" :key="d.id" class="card" style="margin-bottom:0.5rem; padding:0.75rem;">
+      <div v-for="(d, index) in deployments" :key="d.id" class="card" style="margin-bottom:0.5rem; padding:0.75rem;">
         <div style="display:flex; justify-content:space-between; align-items:center;">
           <div>
             <strong>#{{ d.id }}</strong>
             <span style="color:var(--muted); font-size:0.8rem; margin-left:0.5rem;">
               {{ d.commit_hash ? d.commit_hash.slice(0, 8) : 'manual' }}
             </span>
+            <span v-if="isActiveDeployment(d, index)" class="badge badge-success" style="margin-left:0.5rem; font-size:0.65rem;">Active</span>
           </div>
-          <span :class="stateClass(d.state)" class="badge">{{ d.state }}</span>
+          <div style="display:flex; gap:0.5rem; align-items:center;">
+            <button
+              v-if="d.state === 'SUCCESS' && !isActiveDeployment(d, index)"
+              class="btn btn-sm"
+              @click="rollback(d)"
+              :disabled="rollingBack === d.id"
+            >
+              {{ rollingBack === d.id ? 'Rolling back…' : 'Rollback' }}
+            </button>
+            <span :class="stateClass(d.state)" class="badge">{{ d.state }}</span>
+          </div>
         </div>
         <div style="color:var(--muted); font-size:0.8rem; margin-top:0.25rem;">
           {{ new Date(d.created_at).toLocaleString() }}
@@ -181,6 +192,7 @@ export default {
     wwwApplying: false,
     addingEndpoint: false,
     newEndpoint: { service: '', domain: '', port: 80 },
+    rollingBack: null,
   }),
   async created() {
     await this.load();
@@ -343,6 +355,28 @@ export default {
         alert('Failed: ' + e.message);
       } finally {
         ep._wwwApplying = false;
+      }
+    },
+    isActiveDeployment(deployment, index) {
+      if (this.app.active_deployment_id != null) {
+        return deployment.id === this.app.active_deployment_id;
+      }
+      // Fall back to most recent SUCCESS when active_deployment_id not yet tracked
+      return index === 0 && deployment.state === 'SUCCESS';
+    },
+    async rollback(dep) {
+      if (!confirm(`Roll back to deployment #${dep.id} (${dep.commit_hash ? dep.commit_hash.slice(0, 8) : 'manual'})?
+
+This will stop the current containers and restart this deployment's images.`)) return;
+      this.rollingBack = dep.id;
+      try {
+        const result = await api.rollbackDeployment(this.app.id, dep.id);
+        alert(result.message);
+        await this.load();
+      } catch (e) {
+        alert('Rollback failed: ' + e.message);
+      } finally {
+        this.rollingBack = null;
       }
     },
   },

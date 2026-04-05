@@ -40,6 +40,7 @@ export default {
   enableEndpointWww: (appId, endpointId) => request(`/apps/${appId}/endpoints/${endpointId}/www`, { method: 'POST', body: {} }),
   getDeployments: (id) => request(`/apps/${id}/deployments`),
   getDeployment: (appId, deployId) => request(`/apps/${appId}/deployments/${deployId}`),
+  rollbackDeployment: (appId, deployId) => request(`/apps/${appId}/deployments/${deployId}/rollback`, { method: 'POST', body: {} }),
   getEnvVars: (appId) => request(`/apps/${appId}/env`),
   setEnvVar: (appId, data) => request(`/apps/${appId}/env`, { method: 'POST', body: data }),
   deleteEnvVar: (appId, envId) => request(`/apps/${appId}/env/${envId}`, { method: 'DELETE' }),
