@@ -79,16 +79,31 @@ export default {
     groupedContainers() {
       const groups = {};
       for (const c of this.containers) {
-        const key = c.owner === 'app-deploy' ? (c.project || c.ownerDetail || 'deploy') :
-                    c.owner === 'stateful' ? (c.ownerDetail || 'stateful') :
-                    c.owner;
+        let key, groupOwner, label;
+        if ((c.owner === 'app-deploy' || c.owner === 'stateful') && c.appId) {
+          // Co-group deploy + stateful containers under the same app
+          key = `app-${c.appId}`;
+          groupOwner = 'app-deploy';
+          label = c.appName ? `App: ${c.appName}` : `App #${c.appId}`;
+        } else if (c.owner === 'app-deploy') {
+          key = c.project || c.ownerDetail || 'deploy';
+          groupOwner = 'app-deploy';
+          label = `Deploy: ${key}`;
+        } else if (c.owner === 'stateful') {
+          key = c.ownerDetail || 'stateful';
+          groupOwner = 'stateful';
+          label = `Stateful: ${key}`;
+        } else {
+          key = c.owner;
+          groupOwner = c.owner;
+          label = this.groupLabel(c);
+        }
         if (!groups[key]) {
-          groups[key] = { owner: c.owner, label: this.groupLabel(c), containers: [] };
+          groups[key] = { owner: groupOwner, label, containers: [] };
         }
         groups[key].containers.push(c);
       }
-      // Sort: beachhead first, then apps, then static, then unknown
-      const order = { beachhead: 0, stateful: 1, 'app-deploy': 2, 'static-site': 3, unknown: 4 };
+      const order = { beachhead: 0, 'app-deploy': 1, stateful: 2, 'static-site': 3, unknown: 4 };
       return Object.values(groups).sort((a, b) => (order[a.owner] ?? 5) - (order[b.owner] ?? 5));
     },
   },

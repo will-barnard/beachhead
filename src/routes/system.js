@@ -41,8 +41,11 @@ router.get('/containers', async (req, res) => {
     // Load apps to map projects to app names
     const apps = await Apps.findAll();
     const appMap = new Map();
+    const slugToApp = new Map();
     for (const app of apps) {
       appMap.set(app.id, app);
+      const slug = (app.name || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+      slugToApp.set(slug, app);
     }
 
     // Classify each container
@@ -69,7 +72,32 @@ router.get('/containers', async (req, res) => {
       return { ...c, owner, ownerDetail };
     });
 
-    res.json(classified);
+    // Batch-resolve deployId → appId for app-deploy containers
+    const deployIds = classified
+      .filter(c => c.owner === 'app-deploy')
+      .map(c => parseInt(c.project?.replace('deploy-', ''), 10))
+      .filter(id => !isNaN(id));
+    const deployRows = await Deployments.findAppIdsByIds(deployIds);
+    const deployIdToAppId = new Map(deployRows.map(r => [r.id, r.app_id]));
+
+    // Enrich each container with appId + appName so the UI can co-group
+    // stateful containers with their associated deploy containers.
+    const enriched = classified.map(c => {
+      if (c.owner === 'app-deploy') {
+        const deployId = parseInt(c.project?.replace('deploy-', ''), 10);
+        const appId = deployIdToAppId.get(deployId) ?? null;
+        const app = appId ? appMap.get(appId) : null;
+        return { ...c, appId, appName: app?.name ?? null };
+      }
+      if (c.owner === 'stateful') {
+        const slug = c.ownerDetail?.replace(/-stateful$/, '') ?? null;
+        const app = slug ? slugToApp.get(slug) : null;
+        return { ...c, appId: app?.id ?? null, appName: app?.name ?? null };
+      }
+      return c;
+    });
+
+    res.json(enriched);
   } catch (err) {
     logger.error('Failed to list containers', err);
     res.status(500).json({ error: err.message });

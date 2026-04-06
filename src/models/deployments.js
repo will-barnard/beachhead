@@ -172,6 +172,19 @@ const Deployments = {
   },
 
   /**
+   * Return { id, app_id } rows for the given deployment IDs.
+   * Used to map deploy-project containers back to their owning app.
+   */
+  async findAppIdsByIds(ids) {
+    if (!ids || ids.length === 0) return [];
+    const { rows } = await db.query(
+      'SELECT id, app_id FROM deployments WHERE id = ANY($1::int[])',
+      [ids]
+    );
+    return rows;
+  },
+
+  /**
    * Delete deployment records by id array.
    */
   async deleteByIds(ids) {
