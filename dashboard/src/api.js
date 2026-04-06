@@ -60,6 +60,14 @@ export default {
   deleteStaticSite: (id) => request(`/static-sites/${id}`, { method: 'DELETE' }),
   deployStaticSite: (id) => request(`/static-sites/${id}/deploy`, { method: 'POST', body: {} }),
   enableStaticSiteWww: (id) => request(`/static-sites/${id}/www`, { method: 'POST', body: {} }),
+
+  // System
+  getContainers: () => request('/system/containers'),
+  stopContainer: (id) => request(`/system/containers/${id}/stop`, { method: 'POST', body: {} }),
+  removeContainer: (id) => request(`/system/containers/${id}/remove`, { method: 'POST', body: {} }),
+  systemPrune: (keep) => request('/system/prune', { method: 'POST', body: { keep } }),
+  pruneApp: (appId, keep) => request(`/system/apps/${appId}/prune`, { method: 'POST', body: { keep } }),
+
   async uploadStaticSite(id, file) {
     const formData = new FormData();
     formData.append('file', file);

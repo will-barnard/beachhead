@@ -5,6 +5,7 @@
         <router-link to="/" class="logo">⚓ Beachhead</router-link>
         <div style="display: flex; gap: 0.5rem;">
           <router-link v-if="bootstrapMode" to="/bootstrap" class="btn btn-warning">⚙ Configure Auth</router-link>
+          <router-link to="/system" class="btn">📦 System</router-link>
           <router-link to="/static-sites" class="btn">📄 Static Sites</router-link>
           <router-link to="/apps/new" class="btn">+ New App</router-link>
         </div>

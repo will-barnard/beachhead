@@ -290,44 +290,45 @@ async function poll() {
 }
 
 /**
- * On startup: for each app, ensure only the current successful deployment's
- * containers are running. Tear down any stale deploy directories, then bring
- * up the current deployment so it's healthy after a reboot.
+ * On startup: for each app, ensure the active deployment's containers are running.
+ * Does NOT tear down stale deployments — that's handled by the prune system on
+ * demand so startup stays fast.
  */
 async function startupCleanup() {
   try {
     const apps = await Apps.findAll();
     for (const app of apps) {
-      const current = await Deployments.findLastSuccessful(app.id, -1);
-      const appDir = path.join(config.deploy.baseDir, `app-${app.id}`);
+      // Prefer the explicitly tracked active deployment; fall back to last successful
+      const current = app.active_deployment_id
+        ? await Deployments.findById(app.active_deployment_id)
+        : await Deployments.findLastSuccessful(app.id, -1);
 
-      if (!fs.existsSync(appDir)) continue;
+      if (!current) continue;
 
-      const deployDirs = fs.readdirSync(appDir).filter((d) => /^deploy-\d+$/.test(d));
-      for (const dirName of deployDirs) {
-        const deployId = parseInt(dirName.replace('deploy-', ''), 10);
-        const dirPath = path.join(appDir, dirName);
-        const overridePath = path.join(dirPath, 'beachhead.override.yml');
-        if (!fs.existsSync(overridePath)) continue;
+      const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${current.id}`);
+      const overridePath = path.join(deployDir, 'beachhead.override.yml');
+      if (!fs.existsSync(overridePath)) continue;
 
-        if (!current || deployId !== current.id) {
-          // Stale deployment — tear it down
-          try {
-            logger.info(`[startup] Tearing down stale deployment #${deployId} for app ${app.id} (${app.name})`);
-            await dockerComposeDown(dirPath, 'beachhead.override.yml');
-          } catch (err) {
-            logger.warn(`[startup] Could not tear down stale deploy-${deployId}: ${err.message}`);
-          }
-        } else {
-          // Current deployment — bring it up in case it didn't survive the reboot
-          try {
-            logger.info(`[startup] Ensuring current deployment #${deployId} is running for app ${app.name}`);
-            await ensureNetwork(config.deploy.dockerNetwork);
-            await dockerComposeUp(dirPath, 'beachhead.override.yml');
-          } catch (err) {
-            logger.warn(`[startup] Could not start current deploy-${deployId}: ${err.message}`);
+      try {
+        logger.info(`[startup] Ensuring deployment #${current.id} is running for ${app.name}`);
+        await ensureNetwork(config.deploy.dockerNetwork);
+
+        // Also ensure stateful services are running
+        const bhConfig = readBeachheadConfig(deployDir);
+        const statefulServices = Array.isArray(bhConfig?.stateful_services) ? bhConfig.stateful_services : [];
+        if (statefulServices.length > 0) {
+          const slug = (app.name || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+          const statefulNetwork = `${slug}-internal`;
+          await ensureNetwork(statefulNetwork);
+          const statefulOverridePath = path.join(deployDir, 'beachhead.stateful.override.yml');
+          if (fs.existsSync(statefulOverridePath)) {
+            await dockerComposeUpStateful(deployDir, `${slug}-stateful`, statefulServices, 'beachhead.stateful.override.yml');
           }
         }
+
+        await dockerComposeUp(deployDir, 'beachhead.override.yml');
+      } catch (err) {
+        logger.warn(`[startup] Could not start deployment #${current.id} for ${app.name}: ${err.message}`);
       }
     }
   } catch (err) {

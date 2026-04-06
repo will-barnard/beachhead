@@ -147,6 +147,41 @@ const Deployments = {
     );
     return rowCount;
   },
+
+  /**
+   * Find deployments eligible for pruning: FAILED or SUCCESS deployments that are
+   * not the active deployment, ordered oldest first.
+   * `keep` controls how many successful deploys to retain per app for rollback.
+   */
+  async findPrunableByAppId(appId, activeDeploymentId, keep = 3) {
+    const { rows } = await db.query(
+      `WITH ranked AS (
+        SELECT id, state, created_at,
+               ROW_NUMBER() OVER (ORDER BY created_at DESC) AS rn
+        FROM deployments
+        WHERE app_id = $1 AND state = 'SUCCESS' AND ($2::int IS NULL OR id != $2)
+      )
+      SELECT id FROM ranked WHERE rn > $3
+      UNION ALL
+      SELECT id FROM deployments
+      WHERE app_id = $1 AND state = 'FAILED' AND ($2::int IS NULL OR id != $2)
+      ORDER BY id ASC`,
+      [appId, activeDeploymentId || null, keep]
+    );
+    return rows.map(r => r.id);
+  },
+
+  /**
+   * Delete deployment records by id array.
+   */
+  async deleteByIds(ids) {
+    if (!ids || ids.length === 0) return 0;
+    const { rowCount } = await db.query(
+      `DELETE FROM deployments WHERE id = ANY($1::int[])`,
+      [ids]
+    );
+    return rowCount;
+  },
 };
 
 module.exports = Deployments;

@@ -8,6 +8,7 @@ import ConfigureAuth from './views/ConfigureAuth.vue';
 import StaticSitesList from './views/StaticSitesList.vue';
 import StaticSiteDetail from './views/StaticSiteDetail.vue';
 import NewStaticSite from './views/NewStaticSite.vue';
+import Containers from './views/Containers.vue';
 
 const routes = [
   { path: '/', component: AppsList },
@@ -16,6 +17,7 @@ const routes = [
   { path: '/static-sites', component: StaticSitesList },
   { path: '/static-sites/new', component: NewStaticSite },
   { path: '/static-sites/:id', component: StaticSiteDetail },
+  { path: '/system', component: Containers },
   { path: '/bootstrap', component: ConfigureAuth },
 ];
 

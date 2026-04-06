@@ -136,7 +136,10 @@
 
     <!-- Deployments -->
     <div class="card">
-      <h3 style="margin-bottom:0.75rem;">Deployments</h3>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+        <h3>Deployments</h3>
+        <button class="btn btn-sm" @click="pruneDeployments" :disabled="pruning">{{ pruning ? 'Pruning…' : 'Prune Old Deploys' }}</button>
+      </div>
       <div v-if="deployments.length === 0" style="color:var(--muted); font-size:0.85rem;">No deployments yet.</div>
       <div v-for="(d, index) in deployments" :key="d.id" class="card" style="margin-bottom:0.5rem; padding:0.75rem;">
         <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -193,6 +196,7 @@ export default {
     addingEndpoint: false,
     newEndpoint: { service: '', domain: '', port: 80 },
     rollingBack: null,
+    pruning: false,
   }),
   async created() {
     await this.load();
@@ -363,6 +367,22 @@ export default {
       }
       // Fall back to most recent SUCCESS when active_deployment_id not yet tracked
       return index === 0 && deployment.state === 'SUCCESS';
+    },
+    async pruneDeployments() {
+      const input = prompt('How many recent successful deploys to keep?', '3');
+      if (input === null) return;
+      const keep = parseInt(input, 10);
+      if (isNaN(keep) || keep < 1) { alert('Must keep at least 1.'); return; }
+      this.pruning = true;
+      try {
+        const result = await api.pruneApp(this.app.id, keep);
+        alert(`Pruned ${result.prunedCount} deployment(s).`);
+        await this.load();
+      } catch (e) {
+        alert('Prune failed: ' + e.message);
+      } finally {
+        this.pruning = false;
+      }
     },
     async rollback(dep) {
       if (!confirm(`Roll back to deployment #${dep.id} (${dep.commit_hash ? dep.commit_hash.slice(0, 8) : 'manual'})?
