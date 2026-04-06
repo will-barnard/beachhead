@@ -350,7 +350,11 @@ async function startupCleanup() {
           }
         }
 
-        await dockerComposeUp(deployDir, 'beachhead.override.yml');
+        // Only start transient (non-stateful) services — never start stateful services
+        // (e.g. postgres) under the per-deploy project during startup recovery.
+        const allServices = readAllServiceNames(deployDir);
+        const transientServices = allServices.filter(s => !statefulServices.includes(s));
+        await dockerComposeUp(deployDir, 'beachhead.override.yml', transientServices);
 
         // Stop stray containers from other deploy projects for this app.
         // Guards against crashes mid-deploy that leave old containers registered
