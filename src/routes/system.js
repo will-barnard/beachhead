@@ -20,12 +20,12 @@ router.use(requireAuth, requireSuperAdmin);
  */
 router.get('/containers', async (req, res) => {
   try {
-    const format = '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.State}}\t{{.Labels}}';
-    const { stdout } = await exec('docker', ['ps', '-a', '--format', format], { timeout: 15000 });
+    const { stdout } = await exec('docker', ['ps', '-a', '--format', '{{json .}}'], { timeout: 30000 });
     const lines = stdout.trim().split('\n').filter(Boolean);
 
     const containers = lines.map(line => {
-      const [id, name, image, status, state, labelsRaw] = line.split('\t');
+      const obj = JSON.parse(line);
+      const labelsRaw = obj.Labels || '';
       const labels = {};
       if (labelsRaw) {
         for (const pair of labelsRaw.split(',')) {
@@ -35,7 +35,15 @@ router.get('/containers', async (req, res) => {
       }
       const project = labels['com.docker.compose.project'] || null;
       const service = labels['com.docker.compose.service'] || null;
-      return { id: id.slice(0, 12), name, image, status, state, project, service };
+      return {
+        id: (obj.ID || '').slice(0, 12),
+        name: obj.Names,
+        image: obj.Image,
+        status: obj.Status,
+        state: obj.State,
+        project,
+        service,
+      };
     });
 
     // Load apps to map projects to app names
