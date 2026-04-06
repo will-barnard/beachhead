@@ -222,6 +222,10 @@ async function processDeployment(deployment) {
         }
       }
     }
+    // Sweep for any other stray deploy containers beyond the one we just stopped.
+    // Catches cases where earlier deploys weren't torn down (crashes, failed teardowns)
+    // and would otherwise share the same VIRTUAL_HOST on beachhead-net.
+    await stopOtherDeployContainers(app.id, deployment.id);
 
     logger.info(`[deploy #${deployment.id}] Deployment complete for ${app.name}`);
   } catch (err) {
@@ -247,6 +251,26 @@ async function processDeployment(deployment) {
     }
 
     await Deployments.updateState(deployment.id, STATES.FAILED, `[FAILED] ${err.message}`);
+  }
+}
+
+/**
+ * Stop all deploy-project containers for an app EXCEPT the given keepDeployId.
+ * Catches strays from crashes, failed teardowns, or duplicate deploys that share
+ * the same VIRTUAL_HOST and cause nginx-proxy to route to unhealthy containers.
+ */
+async function stopOtherDeployContainers(appId, keepDeployId) {
+  try {
+    const deploys = await Deployments.findByAppId(appId, 100);
+    for (const dep of deploys) {
+      if (dep.id === keepDeployId) continue;
+      const count = await stopComposeProject(`deploy-${dep.id}`);
+      if (count > 0) {
+        logger.info(`[cleanup] Stopped ${count} stray container(s) for deploy-${dep.id} (app #${appId})`);
+      }
+    }
+  } catch (err) {
+    logger.warn(`[cleanup] stopOtherDeployContainers(app #${appId}) failed: ${err.message}`);
   }
 }
 
@@ -327,6 +351,11 @@ async function startupCleanup() {
         }
 
         await dockerComposeUp(deployDir, 'beachhead.override.yml');
+
+        // Stop stray containers from other deploy projects for this app.
+        // Guards against crashes mid-deploy that leave old containers registered
+        // with nginx-proxy under the same VIRTUAL_HOST.
+        await stopOtherDeployContainers(app.id, current.id);
       } catch (err) {
         logger.warn(`[startup] Could not start deployment #${current.id} for ${app.name}: ${err.message}`);
       }
