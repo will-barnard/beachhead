@@ -376,17 +376,6 @@ router.post('/:id/endpoints', async (req, res) => {
       return res.status(400).json({ error: 'port must be between 1 and 65535' });
     }
 
-    // Prevent adding an endpoint for the primary service (it already has a domain on the apps table)
-    const dep = await Deployments.findLastSuccessful(app.id, -1);
-    if (dep) {
-      const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${dep.id}`);
-      const bhConfig = readBeachheadConfig(deployDir);
-      const primaryService = bhConfig?.public_service || app.public_service;
-      if (primaryService && service === primaryService) {
-        return res.status(400).json({ error: `"${service}" is the primary service — update its domain on the app instead` });
-      }
-    }
-
     // Check domain uniqueness across apps, endpoints, and static sites
     const existingApp = await Apps.findByDomain(domain);
     if (existingApp) {
@@ -417,9 +406,6 @@ router.post('/:id/endpoints', async (req, res) => {
 
     res.status(201).json(endpoint);
   } catch (err) {
-    if (err.message?.includes('idx_app_endpoints_app_service')) {
-      return res.status(409).json({ error: 'This service already has an endpoint for this app' });
-    }
     logger.error('Failed to add endpoint', err);
     res.status(500).json({ error: 'Internal server error' });
   }

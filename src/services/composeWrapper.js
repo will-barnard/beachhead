@@ -65,12 +65,22 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
       const epPort = ep.port || 80;
 
       if (override.services[ep.service]) {
-        // Service already exists (e.g. from primary) — merge env vars
-        override.services[ep.service].environment.push(
-          `VIRTUAL_HOST=${epHosts}`,
-          `VIRTUAL_PORT=${epPort}`,
-          `LETSENCRYPT_HOST=${epHosts}`,
-        );
+        // Service already exists (e.g. from primary) — comma-append additional domains
+        // to the existing VIRTUAL_HOST/LETSENCRYPT_HOST entries so nginx-proxy sees a
+        // single comma-separated value rather than duplicate keys (last-one-wins).
+        const env = override.services[ep.service].environment;
+        const vhIdx = env.findIndex(e => e.startsWith('VIRTUAL_HOST='));
+        const leIdx = env.findIndex(e => e.startsWith('LETSENCRYPT_HOST='));
+        if (vhIdx !== -1) {
+          env[vhIdx] = `${env[vhIdx]},${epHosts}`;
+        } else {
+          env.push(`VIRTUAL_HOST=${epHosts}`);
+        }
+        if (leIdx !== -1) {
+          env[leIdx] = `${env[leIdx]},${epHosts}`;
+        } else {
+          env.push(`LETSENCRYPT_HOST=${epHosts}`);
+        }
         if (!override.services[ep.service].networks.includes('beachhead-net')) {
           override.services[ep.service].networks.push('beachhead-net');
         }
@@ -203,18 +213,28 @@ function readServiceVolumes(deployDir, serviceNames) {
 
 /**
  * Generate a minimal compose override that gives the `internal` network a fixed
- * external name. Used when starting stateful services so they join the same
- * Docker network as the transient services in the per-deploy project.
+ * external name, and marks explicitly-named volumes as external. Used when starting
+ * stateful services so they join the same Docker network as the transient services
+ * in the per-deploy project, and so Docker Compose doesn't fight over volume ownership.
  */
-function generateStatefulOverride(statefulNetwork) {
-  return yaml.dump({
+function generateStatefulOverride(statefulNetwork, namedVolumes = []) {
+  const doc = {
     networks: {
       internal: {
         external: true,
         name: statefulNetwork,
       },
     },
-  }, { lineWidth: -1 });
+  };
+
+  if (namedVolumes.length > 0) {
+    doc.volumes = {};
+    for (const vol of namedVolumes) {
+      doc.volumes[vol.key] = { name: vol.name, external: true };
+    }
+  }
+
+  return yaml.dump(doc, { lineWidth: -1 });
 }
 
 /**

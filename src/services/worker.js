@@ -152,7 +152,7 @@ async function processDeployment(deployment) {
       // Both the stateful project and the transient project apply this overlay so
       // every service (postgres, backend) is on the same Docker network.
       const statefulOverridePath = path.join(deployDir, 'beachhead.stateful.override.yml');
-      fs.writeFileSync(statefulOverridePath, generateStatefulOverride(statefulNetwork), 'utf8');
+      fs.writeFileSync(statefulOverridePath, generateStatefulOverride(statefulNetwork, namedVolumes), 'utf8');
       fs.chmodSync(statefulOverridePath, 0o600);
 
       // On the first deployment after stateful_services is added, the database may

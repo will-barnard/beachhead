@@ -125,6 +125,12 @@ const MIGRATIONS = [
       ALTER TABLE apps ADD COLUMN IF NOT EXISTS active_deployment_id INT REFERENCES deployments(id) ON DELETE SET NULL;
     `,
   },
+  {
+    name: '012_allow_multiple_endpoints_per_service',
+    sql: `
+      DROP INDEX IF EXISTS idx_app_endpoints_app_service;
+    `,
+  },
 ];
 
 async function migrate() {
