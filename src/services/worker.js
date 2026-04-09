@@ -161,7 +161,7 @@ async function processDeployment(deployment) {
       // stateful project can take ownership.
       const statefulVolumes = readServiceVolumes(deployDir, statefulServices);
       for (const vol of statefulVolumes) {
-        await stopContainersUsingVolume(vol);
+        await stopContainersUsingVolume(vol, statefulProject);
       }
 
       logger.info(`[deploy #${deployment.id}] Starting stateful services under project '${statefulProject}': ${statefulServices.join(', ')}`);
