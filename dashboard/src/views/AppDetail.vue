@@ -12,8 +12,17 @@
     </div>
 
     <div class="card">
-      <h3 style="margin-bottom:0.75rem;">Details</h3>
-      <table style="width:100%; font-size:0.875rem;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+        <h3>Details</h3>
+        <div v-if="!editingSettings" style="display:flex; gap:0.5rem;">
+          <button class="btn btn-sm" @click="startEditSettings">Edit Settings</button>
+        </div>
+        <div v-else style="display:flex; gap:0.5rem;">
+          <button class="btn btn-sm" @click="saveSettings" :disabled="savingSettings">{{ savingSettings ? 'Saving…' : 'Save' }}</button>
+          <button class="btn btn-sm" @click="cancelEditSettings">Cancel</button>
+        </div>
+      </div>
+      <table v-if="!editingSettings" style="width:100%; font-size:0.875rem;">
         <tr><td style="color: var(--muted); width:150px;">Domain</td><td>{{ app.domain }}</td></tr>
         <tr><td style="color: var(--muted);">Repository</td><td>{{ app.repo_url }}</td></tr>
         <tr><td style="color: var(--muted);">Branch</td><td>{{ app.branch }}</td></tr>
@@ -34,6 +43,37 @@
           </td>
         </tr>
       </table>
+      <div v-else style="display:grid; gap:0.75rem; font-size:0.875rem;">
+        <p style="color:var(--muted); font-size:0.8rem; margin-bottom:0.25rem;">Changes take effect on the next deploy.</p>
+        <div class="form-group" style="margin:0;">
+          <label>Domain</label>
+          <input v-model="settingsForm.domain" placeholder="example.com" />
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label>Repository URL</label>
+          <input v-model="settingsForm.repo_url" placeholder="https://github.com/org/repo" />
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
+          <div class="form-group" style="margin:0;">
+            <label>Branch</label>
+            <input v-model="settingsForm.branch" placeholder="main" />
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label>Public Service</label>
+            <input v-model="settingsForm.public_service" placeholder="frontend" />
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 3fr; gap:0.75rem; align-items:end;">
+          <div class="form-group" style="margin:0;">
+            <label>Public Port</label>
+            <input v-model.number="settingsForm.public_port" type="number" placeholder="80" />
+          </div>
+          <div style="display:flex; align-items:center; gap:0.5rem; padding-bottom:0.5rem;">
+            <input type="checkbox" v-model="settingsForm.auto_deploy" id="auto_deploy_edit" style="width:auto; margin:0;" />
+            <label for="auto_deploy_edit" style="margin:0; color:var(--text);">Auto-deploy on push</label>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Additional Endpoints -->
@@ -122,9 +162,24 @@
     <div class="card">
       <h3 style="margin-bottom:0.75rem;">Environment Variables</h3>
       <div v-if="envVars.length === 0" style="color:var(--muted); font-size:0.85rem;">No variables set.</div>
-      <div v-for="ev in envVars" :key="ev.id" style="display:flex; justify-content:space-between; align-items:center; padding:0.375rem 0; border-bottom:1px solid var(--border);">
-        <code style="font-size:0.8rem;">{{ ev.key }}={{ ev.value }}<span v-if="ev.target_service" style="color:var(--muted);"> ({{ ev.target_service }})</span></code>
-        <button class="btn btn-danger btn-sm" @click="removeEnv(ev.id)">×</button>
+      <div v-for="ev in envVars" :key="ev.id" style="display:flex; justify-content:space-between; align-items:center; padding:0.375rem 0; border-bottom:1px solid var(--border); gap:0.5rem;">
+        <div v-if="editingEnvId !== ev.id" style="flex:1; min-width:0;">
+          <code style="font-size:0.8rem; word-break:break-all;">{{ ev.key }}={{ ev.value }}<span v-if="ev.target_service" style="color:var(--muted);"> ({{ ev.target_service }})</span></code>
+        </div>
+        <div v-else style="display:flex; align-items:center; gap:0.25rem; flex:1; min-width:0;">
+          <code style="font-size:0.8rem; white-space:nowrap;">{{ ev.key }}=</code>
+          <input v-model="editingEnvValue" @keyup.enter="saveEnvEdit(ev)" @keyup.escape="editingEnvId = null" style="flex:1;" />
+        </div>
+        <div style="display:flex; gap:0.25rem; flex-shrink:0;">
+          <template v-if="editingEnvId !== ev.id">
+            <button class="btn btn-sm" @click="startEnvEdit(ev)">Edit</button>
+            <button class="btn btn-danger btn-sm" @click="removeEnv(ev.id)">×</button>
+          </template>
+          <template v-else>
+            <button class="btn btn-sm" @click="saveEnvEdit(ev)">Save</button>
+            <button class="btn btn-sm" @click="editingEnvId = null">Cancel</button>
+          </template>
+        </div>
       </div>
       <div style="display:flex; gap:0.5rem; margin-top:0.75rem;">
         <input v-model="newEnv.key" placeholder="KEY" style="flex:1;" />
@@ -197,6 +252,11 @@ export default {
     newEndpoint: { service: '', domain: '', port: 80 },
     rollingBack: null,
     pruning: false,
+    editingSettings: false,
+    savingSettings: false,
+    settingsForm: {},
+    editingEnvId: null,
+    editingEnvValue: '',
   }),
   async created() {
     await this.load();
@@ -367,6 +427,47 @@ export default {
       }
       // Fall back to most recent SUCCESS when active_deployment_id not yet tracked
       return index === 0 && deployment.state === 'SUCCESS';
+    },
+    startEditSettings() {
+      this.settingsForm = {
+        domain: this.app.domain,
+        repo_url: this.app.repo_url,
+        branch: this.app.branch,
+        public_service: this.app.public_service || '',
+        public_port: this.app.public_port || '',
+        auto_deploy: this.app.auto_deploy,
+      };
+      this.editingSettings = true;
+    },
+    cancelEditSettings() {
+      this.editingSettings = false;
+      this.settingsForm = {};
+    },
+    async saveSettings() {
+      this.savingSettings = true;
+      try {
+        await api.updateApp(this.app.id, this.settingsForm);
+        this.editingSettings = false;
+        await this.load();
+      } catch (e) {
+        alert('Failed to save settings: ' + e.message);
+      } finally {
+        this.savingSettings = false;
+      }
+    },
+    startEnvEdit(ev) {
+      this.editingEnvId = ev.id;
+      this.editingEnvValue = ev.value;
+    },
+    async saveEnvEdit(ev) {
+      try {
+        await api.setEnvVar(this.app.id, { key: ev.key, value: this.editingEnvValue, target_service: ev.target_service || '' });
+        this.editingEnvId = null;
+        this.editingEnvValue = '';
+        this.envVars = await api.getEnvVars(this.app.id);
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      }
     },
     async pruneDeployments() {
       const input = prompt('How many recent successful deploys to keep?', '3');

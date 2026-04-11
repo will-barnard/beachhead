@@ -98,9 +98,40 @@ router.post('/', async (req, res) => {
 // Update app
 router.put('/:id', async (req, res) => {
   try {
-    const app = await Apps.update(req.params.id, req.body);
+    const app = await Apps.findById(req.params.id);
     if (!app) return res.status(404).json({ error: 'App not found' });
-    res.json(app);
+
+    const { domain, repo_url, branch, public_port } = req.body;
+
+    if (domain && domain !== app.domain) {
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(domain)) {
+        return res.status(400).json({ error: 'Invalid domain format' });
+      }
+      const existing = await Apps.findByDomain(domain);
+      if (existing && existing.id !== app.id) {
+        return res.status(409).json({ error: 'Domain already registered to another app' });
+      }
+      const existingEndpoint = await AppEndpoints.findByDomain(domain);
+      if (existingEndpoint) {
+        return res.status(409).json({ error: 'Domain already used by an app endpoint' });
+      }
+    }
+
+    if (repo_url && !/^https?:\/\/.+/.test(repo_url)) {
+      return res.status(400).json({ error: 'repo_url must be an HTTP(S) URL' });
+    }
+
+    if (branch && (!/^[a-zA-Z0-9._\/-]+$/.test(branch) || branch.includes('..'))) {
+      return res.status(400).json({ error: 'Invalid branch name' });
+    }
+
+    if (public_port !== undefined && public_port !== null && public_port !== '' && (public_port < 1 || public_port > 65535)) {
+      return res.status(400).json({ error: 'public_port must be between 1 and 65535' });
+    }
+
+    const updated = await Apps.update(req.params.id, req.body);
+    logger.info(`App updated: ${updated.name} (id=${updated.id})`);
+    res.json(updated);
   } catch (err) {
     logger.error('Failed to update app', err);
     res.status(500).json({ error: 'Internal server error' });
