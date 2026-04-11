@@ -1,70 +1,49 @@
 const jwt = require('jsonwebtoken');
-const jwksRsa = require('jwks-rsa');
 const config = require('../config');
 const logger = require('../logger');
 
-let jwksClient = null;
+/**
+ * Bootstrap mode: no users exist yet, so all requests are allowed.
+ * Once the first admin account is created, auth is required.
+ */
+let _userCount = null;
 
-function getJwksClient() {
-  if (!jwksClient && config.auth.jwksUrl) {
-    jwksClient = jwksRsa({
-      jwksUri: config.auth.jwksUrl,
-      cache: true,
-      rateLimit: true,
-      jwksRequestsPerMinute: 10,
-    });
+async function refreshUserCount() {
+  try {
+    const Users = require('../models/users');
+    _userCount = await Users.count();
+  } catch {
+    _userCount = 0;
   }
-  return jwksClient;
 }
 
 function isBootstrapMode() {
-  return !config.auth.jwksUrl;
+  return _userCount === null || _userCount === 0;
 }
 
-function getSigningKey(header, callback) {
-  const client = getJwksClient();
-  if (!client) {
-    return callback(new Error('JWKS client not configured'));
-  }
-  client.getSigningKey(header.kid, (err, key) => {
-    if (err) return callback(err);
-    callback(null, key.getPublicKey());
-  });
+function getSecret() {
+  return config.auth.jwtSecret;
+}
+
+function signToken(payload, expiresIn = '7d') {
+  return jwt.sign(payload, getSecret(), { expiresIn });
 }
 
 function verifyToken(token) {
-  return new Promise((resolve, reject) => {
-    jwt.verify(
-      token,
-      getSigningKey,
-      {
-        algorithms: ['RS256'],
-        issuer: config.auth.issuer || undefined,
-      },
-      (err, decoded) => {
-        if (err) return reject(err);
-        resolve(decoded);
-      }
-    );
-  });
+  return jwt.verify(token, getSecret());
 }
 
 /**
  * Middleware: require authentication.
- * In bootstrap mode (no AUTH_JWKS_URL), all requests pass through.
- * Once auth service is configured, JWT Bearer token is required.
+ * In bootstrap mode (no users), all requests pass through.
+ * Once an admin account exists, a valid JWT is required.
  */
-function loginUrl() {
-  return config.auth.issuer ? `${config.auth.issuer}/login` : null;
-}
-
 function requireAuth(req, res, next) {
   if (isBootstrapMode()) {
-    req.user = { role: 'super_admin', bootstrap: true };
+    req.user = { role: 'admin', bootstrap: true };
     return next();
   }
 
-  // Accept token from Authorization header (API clients) or cookie (browser)
   let token;
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -74,37 +53,21 @@ function requireAuth(req, res, next) {
   }
 
   if (!token) {
-    return res.status(401).json({ error: 'Authentication required', loginUrl: loginUrl() });
+    return res.status(401).json({ error: 'Authentication required' });
   }
 
-  verifyToken(token)
-    .then((decoded) => {
-      // If this Beachhead has a workspace configured, verify user has access
-      const wsId = config.auth.workspaceId;
-      if (wsId && decoded.workspaces) {
-        const membership = decoded.workspaces.find((w) => w.id === wsId || w.slug === config.auth.workspaceSlug);
-        if (!membership && decoded.role !== 'super_admin') {
-          return res.status(403).json({
-            error: 'You do not have access to this workspace',
-            loginUrl: loginUrl(),
-          });
-        }
-        // Attach workspace-specific role if found
-        if (membership) {
-          decoded.workspaceRole = membership.role;
-        }
-      }
-      req.user = decoded;
-      next();
-    })
-    .catch((err) => {
-      logger.warn('JWT verification failed', { error: err.message });
-      res.status(401).json({ error: 'Invalid or expired token', loginUrl: loginUrl() });
-    });
+  try {
+    const decoded = verifyToken(token);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    logger.warn('JWT verification failed', { error: err.message });
+    res.status(401).json({ error: 'Invalid or expired token' });
+  }
 }
 
 /**
- * Middleware: require super_admin role.
+ * Middleware: require admin role.
  * Must be used after requireAuth.
  */
 function requireSuperAdmin(req, res, next) {
@@ -112,8 +75,8 @@ function requireSuperAdmin(req, res, next) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
-  if (req.user.role !== 'super_admin') {
-    return res.status(403).json({ error: 'super_admin role required' });
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin role required' });
   }
 
   next();
@@ -123,4 +86,6 @@ module.exports = {
   requireAuth,
   requireSuperAdmin,
   isBootstrapMode,
+  signToken,
+  refreshUserCount,
 };

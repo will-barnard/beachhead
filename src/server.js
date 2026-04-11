@@ -101,13 +101,17 @@ async function start() {
     await migrate();
     logger.info('Database migrations complete');
 
+    // Initialise auth — must happen after migrations so the users table exists
+    const { refreshUserCount, isBootstrapMode } = require('./middleware/auth');
+    await refreshUserCount();
+
     // Start deployment worker
     worker.start();
 
     // Start HTTP server
     app.listen(config.port, () => {
       logger.info(`Beachhead server running on port ${config.port}`);
-      logger.info(`Mode: ${require('./middleware/auth').isBootstrapMode() ? 'BOOTSTRAP (no auth)' : 'AUTHENTICATED'}`);
+      logger.info(`Mode: ${isBootstrapMode() ? 'BOOTSTRAP (no auth)' : 'AUTHENTICATED'}`);
     });
   } catch (err) {
     logger.error('Failed to start server', err);

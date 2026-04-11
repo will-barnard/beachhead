@@ -12,10 +12,7 @@ async function request(path, options = {}) {
   const data = await res.json().catch(() => null);
 
   if (res.status === 401) {
-    const url = data?.loginUrl;
-    if (url) {
-      window.location.href = `${url}?return_url=${encodeURIComponent(window.location.href)}`;
-    }
+    window.location.href = '/login';
     throw new Error(data?.error || 'Authentication required');
   }
 
@@ -48,10 +45,15 @@ export default {
   saveEnvFile: (appId, data) => request(`/apps/${appId}/env-files`, { method: 'POST', body: data }),
   deleteEnvFile: (appId, fileId) => request(`/apps/${appId}/env-files/${fileId}`, { method: 'DELETE' }),
   getHealth: () => request('/health'),
-  configureAuth: (data) => request('/bootstrap/configure-auth', { method: 'POST', body: data }),
-  connectAuth: (data) => request('/bootstrap/connect-auth', { method: 'POST', body: data }),
-  activateAuth: () => request('/bootstrap/activate-auth', { method: 'POST', body: {} }),
+
+  // Auth
   getBootstrapStatus: () => request('/bootstrap/status'),
+  setupAdmin: (data) => request('/bootstrap/setup', { method: 'POST', body: data }),
+  login: (data) => request('/bootstrap/login', { method: 'POST', body: data }),
+  logout: () => request('/bootstrap/logout', { method: 'POST', body: {} }),
+  getUsers: () => request('/bootstrap/users'),
+  createUser: (data) => request('/bootstrap/users', { method: 'POST', body: data }),
+  deleteUser: (id) => request(`/bootstrap/users/${id}`, { method: 'DELETE' }),
 
   // Static sites
   getStaticSites: () => request('/static-sites'),
@@ -74,8 +76,7 @@ export default {
     const res = await fetch(`${BASE}/static-sites/${id}/upload`, { method: 'POST', body: formData });
     const data = await res.json().catch(() => null);
     if (res.status === 401) {
-      const url = data?.loginUrl;
-      if (url) window.location.href = `${url}?return_url=${encodeURIComponent(window.location.href)}`;
+      window.location.href = '/login';
       throw new Error(data?.error || 'Authentication required');
     }
     if (!res.ok) throw new Error(data?.error || `Upload failed: ${res.status}`);

@@ -131,6 +131,18 @@ const MIGRATIONS = [
       DROP INDEX IF EXISTS idx_app_endpoints_app_service;
     `,
   },
+  {
+    name: '013_create_users',
+    sql: `
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'admin',
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `,
+  },
 ];
 
 async function migrate() {

@@ -1,8 +1,7 @@
 #!/bin/bash
-# Clears auth configuration and restarts Beachhead in bootstrap mode.
-# Use this when brew-auth is down and you are locked out of the dashboard.
-# After brew-auth is redeployed and healthy, click "Activate Auth" in the
-# dashboard to re-enable JWT validation.
+# Deletes all user accounts and restarts Beachhead in bootstrap mode.
+# Use this when you are locked out of the dashboard.
+# After restart, visit the dashboard to create a new admin account.
 
 set -euo pipefail
 
@@ -14,7 +13,7 @@ NC='\033[0m'
 echo ""
 echo -e "${BOLD}⚓  Beachhead — Reset Auth${NC}"
 echo ""
-echo -e "${YELLOW}This will clear all AUTH_* variables from .env${NC}"
+echo -e "${YELLOW}This will DELETE all user accounts from the database${NC}"
 echo -e "${YELLOW}and restart Beachhead in bootstrap mode (no auth required).${NC}"
 echo ""
 read -rp "Continue? [y/N] " CONFIRM
@@ -23,20 +22,15 @@ if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
   exit 0
 fi
 
-sed -i 's/^AUTH_JWKS_URL=.*/AUTH_JWKS_URL=/' .env
-sed -i 's/^AUTH_ISSUER=.*/AUTH_ISSUER=/' .env
-sed -i 's/^AUTH_COOKIE_NAME=.*/AUTH_COOKIE_NAME=/' .env
-sed -i 's/^AUTH_MODE=.*/AUTH_MODE=/' .env
-sed -i 's/^AUTH_WORKSPACE_ID=.*/AUTH_WORKSPACE_ID=/' .env
-sed -i 's/^AUTH_WORKSPACE_SLUG=.*/AUTH_WORKSPACE_SLUG=/' .env
-sed -i 's/^AUTH_WORKSPACE_API_KEY=.*/AUTH_WORKSPACE_API_KEY=/' .env
+# Delete all users via the postgres container
+docker compose exec -T postgres psql -U beachhead -d beachhead -c "DELETE FROM users;" 2>/dev/null || \
+  docker exec beachhead-postgres-1 psql -U beachhead -d beachhead -c "DELETE FROM users;"
 
 docker compose restart beachhead
 
 echo ""
 echo -e "${GREEN}✓ Done. Beachhead is now in bootstrap mode.${NC}"
 echo ""
-echo "  1. Open https://beachhead.brew.rip — no login required"
-echo "  2. Redeploy brew-auth from the dashboard if needed"
-echo "  3. Once brew-auth is healthy, click 'Activate Auth' to re-enable JWT validation"
+echo "  1. Open the dashboard — no login required"
+echo "  2. Create a new admin account when prompted"
 echo ""

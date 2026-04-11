@@ -3,11 +3,11 @@
     <header>
       <nav>
         <router-link to="/" class="logo">⚓ Beachhead</router-link>
-        <div style="display: flex; gap: 0.5rem;">
-          <router-link v-if="bootstrapMode" to="/bootstrap" class="btn btn-warning">⚙ Configure Auth</router-link>
+        <div v-if="authenticated" style="display: flex; gap: 0.5rem;">
           <router-link to="/system" class="btn">📦 System</router-link>
           <router-link to="/static-sites" class="btn">📄 Static Sites</router-link>
           <router-link to="/apps/new" class="btn">+ New App</router-link>
+          <router-link to="/settings" class="btn" title="Settings" style="padding: 0.5rem 0.65rem;">⚙</router-link>
         </div>
       </nav>
     </header>
@@ -22,15 +22,55 @@ import api from './api.js';
 
 export default {
   data: () => ({
-    bootstrapMode: false,
+    authenticated: false,
   }),
   async mounted() {
     try {
-      const health = await api.getHealth();
-      this.bootstrapMode = health.mode === 'bootstrap';
+      const status = await api.getBootstrapStatus();
+      if (status.bootstrap) {
+        // No users yet — redirect to setup unless already there
+        if (this.$route.path !== '/setup') {
+          this.$router.replace('/setup');
+        }
+        return;
+      }
+      if (status.user) {
+        this.authenticated = true;
+      } else {
+        // Not logged in — redirect to login
+        if (this.$route.path !== '/login') {
+          this.$router.replace('/login');
+        }
+      }
     } catch {
-      // ignore — health check failure shouldn't block the UI
+      // API unreachable — show whatever the current page is
     }
+  },
+  watch: {
+    '$route'() {
+      // Re-check auth on navigation
+      this.checkAuth();
+    },
+  },
+  methods: {
+    async checkAuth() {
+      try {
+        const status = await api.getBootstrapStatus();
+        if (status.bootstrap) {
+          this.authenticated = false;
+          if (this.$route.path !== '/setup') this.$router.replace('/setup');
+          return;
+        }
+        if (status.user) {
+          this.authenticated = true;
+        } else {
+          this.authenticated = false;
+          if (this.$route.path !== '/login') this.$router.replace('/login');
+        }
+      } catch {
+        // ignore
+      }
+    },
   },
 };
 </script>
