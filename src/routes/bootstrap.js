@@ -2,6 +2,7 @@ const express = require('express');
 const config = require('../config');
 const logger = require('../logger');
 const Users = require('../models/users');
+const Settings = require('../models/settings');
 const { isBootstrapMode, signToken, refreshUserCount, requireAuth, requireSuperAdmin } = require('../middleware/auth');
 
 const router = express.Router();
@@ -187,6 +188,58 @@ router.delete('/users/:id', requireAuth, requireSuperAdmin, async (req, res) => 
     res.json({ message: 'User deleted', user: deleted });
   } catch (err) {
     logger.error(`User deletion failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Settings ──
+
+/**
+ * GET /api/bootstrap/settings
+ * Get all settings (admin only).
+ */
+router.get('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const settings = await Settings.getAll();
+    // Never expose registry password in full
+    if (settings.registry_password) {
+      settings.registry_password = settings.registry_password ? '••••••••' : '';
+    }
+    res.json(settings);
+  } catch (err) {
+    logger.error('Failed to get settings', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * PUT /api/bootstrap/settings
+ * Update settings (admin only). Accepts { key: value } pairs.
+ */
+router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
+  const allowed = ['build_mode', 'registry_url', 'registry_user', 'registry_password'];
+  const updates = req.body;
+
+  if (!updates || typeof updates !== 'object') {
+    return res.status(400).json({ error: 'Request body must be a JSON object' });
+  }
+
+  try {
+    for (const [key, value] of Object.entries(updates)) {
+      if (!allowed.includes(key)) continue;
+      if (key === 'build_mode' && !['local', 'remote'].includes(value)) {
+        return res.status(400).json({ error: 'build_mode must be "local" or "remote"' });
+      }
+      // Skip masked password — don't overwrite with placeholder
+      if (key === 'registry_password' && value === '••••••••') continue;
+      await Settings.set(key, String(value));
+    }
+    logger.info(`Settings updated by ${req.user.username || 'bootstrap'}`);
+    const settings = await Settings.getAll();
+    if (settings.registry_password) settings.registry_password = '••••••••';
+    res.json(settings);
+  } catch (err) {
+    logger.error(`Settings update failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });

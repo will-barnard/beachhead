@@ -55,6 +55,10 @@ export default {
   createUser: (data) => request('/bootstrap/users', { method: 'POST', body: data }),
   deleteUser: (id) => request(`/bootstrap/users/${id}`, { method: 'DELETE' }),
 
+  // Settings
+  getSettings: () => request('/bootstrap/settings'),
+  updateSettings: (data) => request('/bootstrap/settings', { method: 'PUT', body: data }),
+
   // Static sites
   getStaticSites: () => request('/static-sites'),
   getStaticSite: (id) => request(`/static-sites/${id}`),

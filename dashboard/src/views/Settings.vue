@@ -48,6 +48,54 @@
     <div style="margin-top: 2rem;">
       <button class="btn btn-danger" @click="logout">Sign Out</button>
     </div>
+
+    <!-- Build Configuration -->
+    <div class="card" style="margin-top: 2rem;">
+      <h3 style="margin-bottom: 1rem;">Build Configuration</h3>
+
+      <div v-if="buildError" style="color: var(--danger); margin-bottom: 0.75rem;">{{ buildError }}</div>
+      <div v-if="buildSuccess" style="color: var(--success); margin-bottom: 0.75rem;">{{ buildSuccess }}</div>
+
+      <div style="margin-bottom: 1rem;">
+        <label>Build Mode</label>
+        <div style="display: flex; gap: 1rem; margin-top: 0.25rem;">
+          <label style="display: flex; align-items: center; gap: 0.35rem; cursor: pointer;">
+            <input type="radio" v-model="buildSettings.build_mode" value="local" />
+            Server (local builds)
+          </label>
+          <label style="display: flex; align-items: center; gap: 0.35rem; cursor: pointer;">
+            <input type="radio" v-model="buildSettings.build_mode" value="remote" />
+            Remote workers
+          </label>
+        </div>
+      </div>
+
+      <div v-if="buildSettings.build_mode === 'remote'" style="margin-bottom: 1rem;">
+        <p style="color: var(--muted); margin-bottom: 1rem; font-size: 0.9rem;">
+          Remote workers build Docker images and push to a registry.<br/>
+          The server then pulls the images during deployment.
+        </p>
+
+        <div style="display: flex; flex-direction: column; gap: 0.75rem; max-width: 400px;">
+          <div>
+            <label>Registry URL</label>
+            <input v-model="buildSettings.registry_url" placeholder="e.g. registry.example.com/myproject" style="width: 100%;" />
+          </div>
+          <div>
+            <label>Registry Username</label>
+            <input v-model="buildSettings.registry_user" autocomplete="off" style="width: 100%;" />
+          </div>
+          <div>
+            <label>Registry Password</label>
+            <input v-model="buildSettings.registry_password" type="password" autocomplete="new-password" style="width: 100%;" placeholder="(unchanged if left blank)" />
+          </div>
+        </div>
+      </div>
+
+      <button class="btn" @click="saveBuildSettings" :disabled="savingBuild">
+        {{ savingBuild ? 'Saving...' : 'Save Build Settings' }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -63,9 +111,19 @@ export default {
     error: null,
     success: null,
     adding: false,
+    buildSettings: {
+      build_mode: 'local',
+      registry_url: '',
+      registry_user: '',
+      registry_password: '',
+    },
+    buildError: null,
+    buildSuccess: null,
+    savingBuild: false,
   }),
   async mounted() {
     await this.loadUsers();
+    await this.loadBuildSettings();
     try {
       const status = await api.getBootstrapStatus();
       if (status.user) this.currentUserId = status.user.id;
@@ -113,6 +171,34 @@ export default {
         // ignore
       }
       this.$router.push('/login');
+    },
+    async loadBuildSettings() {
+      try {
+        const settings = await api.getSettings();
+        this.buildSettings.build_mode = settings.build_mode || 'local';
+        this.buildSettings.registry_url = settings.registry_url || '';
+        this.buildSettings.registry_user = settings.registry_user || '';
+        this.buildSettings.registry_password = '';  // never display — show placeholder
+      } catch {
+        // settings may not exist yet
+      }
+    },
+    async saveBuildSettings() {
+      this.buildError = null;
+      this.buildSuccess = null;
+      this.savingBuild = true;
+      try {
+        const payload = { ...this.buildSettings };
+        // Don't send empty password (means "keep existing")
+        if (!payload.registry_password) delete payload.registry_password;
+        await api.updateSettings(payload);
+        this.buildSuccess = 'Build settings saved';
+        this.buildSettings.registry_password = '';
+      } catch (e) {
+        this.buildError = e.message;
+      } finally {
+        this.savingBuild = false;
+      }
     },
   },
 };

@@ -143,6 +143,42 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    name: '014_create_build_jobs',
+    sql: `
+      CREATE TABLE IF NOT EXISTS build_jobs (
+        id SERIAL PRIMARY KEY,
+        deployment_id INT NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+        app_id INT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        service TEXT NOT NULL,
+        dockerfile TEXT NOT NULL DEFAULT 'Dockerfile',
+        build_context TEXT NOT NULL DEFAULT '.',
+        image_tag TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'PENDING',
+        logs TEXT DEFAULT '',
+        worker_id TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        started_at TIMESTAMP,
+        completed_at TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_build_jobs_state ON build_jobs(state);
+      CREATE INDEX IF NOT EXISTS idx_build_jobs_deployment ON build_jobs(deployment_id);
+    `,
+  },
+  {
+    name: '015_create_settings',
+    sql: `
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+      INSERT INTO settings (key, value) VALUES ('build_mode', 'local') ON CONFLICT DO NOTHING;
+      INSERT INTO settings (key, value) VALUES ('registry_url', '') ON CONFLICT DO NOTHING;
+      INSERT INTO settings (key, value) VALUES ('registry_user', '') ON CONFLICT DO NOTHING;
+      INSERT INTO settings (key, value) VALUES ('registry_password', '') ON CONFLICT DO NOTHING;
+    `,
+  },
 ];
 
 async function migrate() {

@@ -6,11 +6,13 @@ const AppEndpoints = require('../models/appEndpoints');
 const StaticSites = require('../models/staticSites');
 const EnvVars = require('../models/envVars');
 const { EnvFiles } = require('../models/envFiles');
-const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames, readServiceVolumes, generateStatefulOverride } = require('./composeWrapper');
-const { exec, gitClone, dockerComposeUp, dockerComposeUpStateful, stopContainersUsingVolume, stopComposeProject, dockerComposeDown, dockerComposeLogs, ensureNetwork } = require('./docker');
+const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames, readServiceVolumes, readBuildableServices, generateStatefulOverride } = require('./composeWrapper');
+const { exec, gitClone, dockerComposeUp, dockerComposeUpNoBuild, dockerComposeUpStateful, stopContainersUsingVolume, stopComposeProject, dockerComposeDown, dockerComposeLogs, ensureNetwork } = require('./docker');
 const { checkHealth } = require('./healthCheck');
 const config = require('../config');
 const logger = require('../logger');
+const BuildJobs = require('../models/buildJobs');
+const Settings = require('../models/settings');
 
 const STATES = Deployments.STATES;
 const POLL_INTERVAL = 5000;
@@ -32,6 +34,89 @@ function envQuote(value) {
     return `'${value.replace(/'/g, "'\\''")}'`;
   }
   return value;
+}
+
+const BUILD_JOB_POLL_INTERVAL = 3000;   // how often to check if remote builds are done
+const BUILD_JOB_TIMEOUT = 15 * 60 * 1000; // 15 min max wait for remote builds
+
+/**
+ * Enqueue build jobs for each buildable service and wait for them to finish.
+ * Returns a map of { service: imageTag } on success.
+ * Throws if any build fails or times out.
+ */
+async function remoteBuild(deployment, app, deployDir) {
+  const registry = await Settings.getRegistryConfig();
+  if (!registry.url) {
+    throw new Error('Remote builds enabled but no registry URL configured (Settings → Registry URL)');
+  }
+
+  const buildableServices = readBuildableServices(deployDir);
+  if (buildableServices.length === 0) {
+    logger.info(`[deploy #${deployment.id}] No buildable services found — skipping remote build`);
+    return null; // fall through to local compose up
+  }
+
+  const slug = (app.name || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+  const imageOverrides = {};
+
+  // Note: build jobs include repo_url and branch so the remote worker can clone.
+  // We store these in extra columns on the build_jobs row via a JOIN — but since
+  // the job claim endpoint can read from apps, we just store what we need.
+  for (const svc of buildableServices) {
+    const imageTag = `${registry.url}/${slug}-${svc.service}:d${deployment.id}`;
+    const job = await BuildJobs.create({
+      deployment_id: deployment.id,
+      app_id: app.id,
+      service: svc.service,
+      dockerfile: svc.dockerfile,
+      build_context: svc.context,
+      image_tag: imageTag,
+    });
+    imageOverrides[svc.service] = imageTag;
+    logger.info(`[deploy #${deployment.id}] Enqueued build job #${job.id} for ${svc.service} → ${imageTag}`);
+  }
+
+  // Poll until all build jobs are done
+  const deadline = Date.now() + BUILD_JOB_TIMEOUT;
+  while (Date.now() < deadline) {
+    const status = await BuildJobs.checkDeploymentStatus(deployment.id);
+    if (status.done) {
+      if (!status.success) {
+        const failedNames = status.failed.map(j => j.service).join(', ');
+        throw new Error(`Remote build failed for service(s): ${failedNames}`);
+      }
+      logger.info(`[deploy #${deployment.id}] All remote builds completed successfully`);
+
+      // Login to the registry so we can pull the images
+      if (registry.user && registry.password) {
+        const registryHost = registry.url.split('/')[0];
+        logger.info(`[deploy #${deployment.id}] Logging in to registry ${registryHost}`);
+        await new Promise((resolve, reject) => {
+          const proc = require('child_process').spawn('docker', ['login', registryHost, '-u', registry.user, '--password-stdin'], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+          proc.stdin.write(registry.password);
+          proc.stdin.end();
+          proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`docker login exited with code ${code}`)));
+          proc.on('error', reject);
+        });
+      }
+
+      // Pull images on the local Docker daemon
+      for (const [service, tag] of Object.entries(imageOverrides)) {
+        logger.info(`[deploy #${deployment.id}] Pulling ${tag}`);
+        await exec('docker', ['pull', tag], { timeout: 120000 });
+      }
+
+      return imageOverrides;
+    }
+    // Wait before polling again
+    await new Promise(r => setTimeout(r, BUILD_JOB_POLL_INTERVAL));
+  }
+
+  // Timed out — fail remaining jobs
+  await BuildJobs.failAllForDeployment(deployment.id, 'Timed out waiting for remote build');
+  throw new Error('Remote builds timed out');
 }
 
 async function processDeployment(deployment) {
@@ -137,6 +222,34 @@ async function processDeployment(deployment) {
       }
     }
 
+    // Check build mode — remote workers build + push images, local does compose up --build
+    const buildMode = await Settings.getBuildMode();
+    let imageOverrides = null;
+
+    if (buildMode === 'remote') {
+      await transition(deployment, STATES.BUILDING, 'Waiting for remote build workers…');
+      imageOverrides = await remoteBuild(deployment, app, deployDir);
+
+      // If remote build returned overrides, regenerate the override file with image refs
+      if (imageOverrides) {
+        const updatedOverride = generateOverride({
+          appSlug: app.name,
+          deployId: deployment.id,
+          publicService,
+          domain: app.domain,
+          publicPort: publicPort || 80,
+          envVars,
+          namedVolumes,
+          wwwRedirect: app.www_redirect || false,
+          statefulNetwork,
+          additionalEndpoints,
+          imageOverrides,
+        });
+        writeOverrideFile(deployDir, updatedOverride);
+        fs.chmodSync(path.join(deployDir, 'beachhead.override.yml'), 0o600);
+      }
+    }
+
     // ── STARTING_CONTAINERS ──
     await transition(deployment, STATES.STARTING_CONTAINERS, 'Starting containers');
 
@@ -172,7 +285,14 @@ async function processDeployment(deployment) {
     // If all services are transient, pass an empty array (starts everything).
     const allServices = readAllServiceNames(deployDir);
     const transientServices = allServices.filter(s => !statefulServices.includes(s));
-    await dockerComposeUp(deployDir, 'beachhead.override.yml', transientServices);
+
+    if (imageOverrides) {
+      // Remote-built: images already pulled, no build needed
+      await dockerComposeUpNoBuild(deployDir, 'beachhead.override.yml', transientServices);
+    } else {
+      // Local build: compose up --build (existing behavior)
+      await dockerComposeUp(deployDir, 'beachhead.override.yml', transientServices);
+    }
 
     // ── PROXY_SETUP ──
     await transition(deployment, STATES.PROXY_SETUP, `Proxy configured for ${app.domain} -> ${publicService}:${publicPort || 80}`);

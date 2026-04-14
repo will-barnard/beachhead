@@ -12,7 +12,7 @@ const logger = require('../logger');
  * additionalEndpoints: optional array of { service, domain, port, wwwRedirect }
  * for apps with multiple public-facing services on different subdomains.
  */
-function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints }) {
+function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides }) {
   if (!publicService || !domain) {
     throw new Error('publicService and domain are required for compose override');
   }
@@ -130,6 +130,21 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
         override.services[service].environment = [];
       }
       override.services[service].environment.push(...vars);
+    }
+  }
+
+  // Inject prebuilt image references from remote build workers.
+  // When present, each service uses the registry image instead of building locally.
+  if (imageOverrides && Object.keys(imageOverrides).length > 0) {
+    for (const [service, imageTag] of Object.entries(imageOverrides)) {
+      if (!override.services[service]) {
+        override.services[service] = {
+          container_name: `${slug}-${service}${suffix}`,
+          restart: 'unless-stopped',
+        };
+      }
+      override.services[service].image = imageTag;
+      override.services[service].pull_policy = 'always';
     }
   }
 
@@ -273,6 +288,43 @@ function readBeachheadConfig(deployDir) {
   }
 }
 
+/**
+ * Read all services that have a `build:` directive in docker-compose.yml.
+ * Returns an array of { service, dockerfile, context } objects.
+ * Used to determine which images the remote build worker needs to produce.
+ */
+function readBuildableServices(deployDir) {
+  const composePath = path.join(deployDir, 'docker-compose.yml');
+  if (!fs.existsSync(composePath)) return [];
+
+  try {
+    const raw = fs.readFileSync(composePath, 'utf8');
+    const doc = yaml.load(raw);
+    if (!doc || !doc.services) return [];
+
+    const result = [];
+    for (const [name, svc] of Object.entries(doc.services)) {
+      if (!svc.build) continue;
+
+      if (typeof svc.build === 'string') {
+        // Short syntax: build: ./path
+        result.push({ service: name, dockerfile: 'Dockerfile', context: svc.build });
+      } else {
+        // Object syntax: build: { context: ..., dockerfile: ... }
+        result.push({
+          service: name,
+          dockerfile: svc.build.dockerfile || 'Dockerfile',
+          context: svc.build.context || '.',
+        });
+      }
+    }
+    return result;
+  } catch (err) {
+    logger.warn(`Failed to read buildable services: ${err.message}`);
+    return [];
+  }
+}
+
 module.exports = {
   generateOverride,
   writeOverrideFile,
@@ -280,5 +332,6 @@ module.exports = {
   readNamedVolumes,
   readAllServiceNames,
   readServiceVolumes,
+  readBuildableServices,
   generateStatefulOverride,
 };
