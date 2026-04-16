@@ -4,11 +4,13 @@ services:
     container_name: beachhead-worker
     restart: unless-stopped
     environment:
-      # Single server (simple)
+      # Single server
       - BEACHHEAD_URL=${BEACHHEAD_URL:-}
       - BEACHHEAD_TOKEN=${BEACHHEAD_TOKEN:-}
-      # Multiple servers — JSON array, overrides URL/TOKEN if set
-      # e.g. '[{"url":"https://bh1.example.com","token":"tok1"},{"url":"https://bh2.example.com","token":"tok2"}]'
+      # Multiple servers — comma-separated (recommended for .env files)
+      - BEACHHEAD_URLS=${BEACHHEAD_URLS:-}
+      - BEACHHEAD_TOKENS=${BEACHHEAD_TOKENS:-}
+      # Multiple servers — JSON array (alternative)
       - BEACHHEAD_SERVERS=${BEACHHEAD_SERVERS:-}
       - BEACHHEAD_WORKER_ID=${BEACHHEAD_WORKER_ID:-worker-01}
       - BEACHHEAD_POLL_INTERVAL=${BEACHHEAD_POLL_INTERVAL:-5000}

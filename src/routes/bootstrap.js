@@ -216,6 +216,27 @@ router.get('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
 });
 
 /**
+ * POST /api/bootstrap/worker-token
+ * Generate a long-lived token (1 year) for a user, intended for build workers.
+ * Body: { user_id }
+ */
+router.post('/worker-token', requireAuth, requireSuperAdmin, async (req, res) => {
+  const { user_id } = req.body;
+  if (!user_id) return res.status(400).json({ error: 'user_id is required' });
+
+  try {
+    const user = await Users.findById(user_id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const token = signToken({ id: user.id, username: user.username, role: user.role }, '365d');
+    res.json({ token, expires_in: '365 days', username: user.username });
+  } catch (err) {
+    logger.error(`Worker token generation failed: ${err.message}`);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
  * PUT /api/bootstrap/settings
  * Update settings (admin only). Accepts { key: value } pairs.
  */

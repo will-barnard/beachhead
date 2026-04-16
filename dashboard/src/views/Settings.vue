@@ -20,7 +20,8 @@
             <td style="padding: 0.5rem;">{{ u.username }}</td>
             <td style="padding: 0.5rem;"><span class="badge badge-info">{{ u.role }}</span></td>
             <td style="padding: 0.5rem; color: var(--muted);">{{ new Date(u.created_at).toLocaleDateString() }}</td>
-            <td style="padding: 0.5rem; text-align: right;">
+            <td style="padding: 0.5rem; text-align: right; white-space: nowrap;">
+              <button class="btn btn-sm" @click="generateWorkerToken(u)" style="margin-right: 0.25rem;">Worker Token</button>
               <button v-if="u.id !== currentUserId" class="btn btn-danger btn-sm" @click="removeUser(u)">Delete</button>
             </td>
           </tr>
@@ -30,6 +31,15 @@
       <h4 style="margin-bottom: 0.75rem;">Add User</h4>
       <div v-if="error" style="color: var(--danger); margin-bottom: 0.75rem;">{{ error }}</div>
       <div v-if="success" style="color: var(--success); margin-bottom: 0.75rem;">{{ success }}</div>
+
+      <div v-if="workerToken" style="margin-bottom: 1rem; padding: 0.75rem; background: var(--surface); border: 1px solid var(--border); border-radius: 4px;">
+        <strong>Worker token for {{ workerTokenUser }}</strong> (expires in 1 year)
+        <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; align-items: center;">
+          <input :value="workerToken" readonly style="flex: 1; font-family: monospace; font-size: 0.8rem;" @click="$event.target.select()" />
+          <button class="btn btn-sm" @click="copyToken">{{ copied ? 'Copied!' : 'Copy' }}</button>
+        </div>
+        <p style="color: var(--muted); font-size: 0.8rem; margin: 0.5rem 0 0 0;">This token won't be shown again. Copy it now.</p>
+      </div>
 
       <form @submit.prevent="addUser" style="display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap;">
         <div>
@@ -140,6 +150,9 @@ export default {
     error: null,
     success: null,
     adding: false,
+    workerToken: null,
+    workerTokenUser: '',
+    copied: false,
     buildSettings: {
       build_mode: 'local',
       registry_type: 'ghcr',
@@ -194,6 +207,26 @@ export default {
         await this.loadUsers();
       } catch (e) {
         this.error = e.message;
+      }
+    },
+    async generateWorkerToken(u) {
+      this.workerToken = null;
+      this.copied = false;
+      try {
+        const result = await api.generateWorkerToken(u.id);
+        this.workerToken = result.token;
+        this.workerTokenUser = u.username;
+      } catch (e) {
+        this.error = e.message;
+      }
+    },
+    async copyToken() {
+      try {
+        await navigator.clipboard.writeText(this.workerToken);
+        this.copied = true;
+        setTimeout(() => { this.copied = false; }, 2000);
+      } catch {
+        // fallback: the input is already selectable
       }
     },
     async logout() {

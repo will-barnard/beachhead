@@ -54,6 +54,7 @@ export default {
   getUsers: () => request('/bootstrap/users'),
   createUser: (data) => request('/bootstrap/users', { method: 'POST', body: data }),
   deleteUser: (id) => request(`/bootstrap/users/${id}`, { method: 'DELETE' }),
+  generateWorkerToken: (userId) => request('/bootstrap/worker-token', { method: 'POST', body: { user_id: userId } }),
 
   // Settings
   getSettings: () => request('/bootstrap/settings'),

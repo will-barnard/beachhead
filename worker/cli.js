@@ -22,8 +22,6 @@ function loadConfig() {
     try { file = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { /* ignore */ }
   }
 
-  const serverUrl = process.env.BEACHHEAD_URL || file.serverUrl;
-  const token = process.env.BEACHHEAD_TOKEN || file.token;
   const workerId = process.env.BEACHHEAD_WORKER_ID || file.workerId || os.hostname();
   const pollInterval = parseInt(process.env.BEACHHEAD_POLL_INTERVAL || file.pollInterval || CONFIG_DEFAULTS.pollInterval, 10);
   const workDir = process.env.BEACHHEAD_WORK_DIR || file.workDir || CONFIG_DEFAULTS.workDir;
@@ -32,10 +30,19 @@ function loadConfig() {
   const buildPlatform = process.env.BEACHHEAD_BUILD_PLATFORM || file.buildPlatform || null;
 
   // ── Multi-server support ──────────────────────────────────────────
-  // Priority: BEACHHEAD_SERVERS JSON env var → config file `servers` array → single server fallback
+  // Priority:
+  //   1. BEACHHEAD_URLS + BEACHHEAD_TOKENS  (comma-separated, .env-safe)
+  //   2. BEACHHEAD_SERVERS                  (JSON array)
+  //   3. config file `servers` array
+  //   4. single BEACHHEAD_URL + BEACHHEAD_TOKEN (backwards compat)
   let servers = [];
 
-  if (process.env.BEACHHEAD_SERVERS) {
+  if (process.env.BEACHHEAD_URLS) {
+    const urls = process.env.BEACHHEAD_URLS.split(',').map(s => s.trim()).filter(Boolean);
+    const tokens = (process.env.BEACHHEAD_TOKENS || '').split(',').map(s => s.trim());
+    if (urls.length !== tokens.filter(Boolean).length) die('BEACHHEAD_URLS and BEACHHEAD_TOKENS must have the same number of comma-separated entries');
+    servers = urls.map((u, i) => ({ serverUrl: u.replace(/\/$/, ''), token: tokens[i] }));
+  } else if (process.env.BEACHHEAD_SERVERS && process.env.BEACHHEAD_SERVERS.trim()) {
     let parsed;
     try { parsed = JSON.parse(process.env.BEACHHEAD_SERVERS); } catch { die('BEACHHEAD_SERVERS must be valid JSON'); }
     if (!Array.isArray(parsed)) die('BEACHHEAD_SERVERS must be a JSON array');
@@ -52,11 +59,11 @@ function loadConfig() {
     if (servers.length === 0) die('Config file `servers` array contained no valid entries');
   } else {
     // Single-server backwards compat
-    const serverUrl = process.env.BEACHHEAD_URL || file.serverUrl;
-    const token = process.env.BEACHHEAD_TOKEN || file.token;
-    if (!serverUrl) die('Missing BEACHHEAD_URL (or serverUrl / servers in config file)');
-    if (!token) die('Missing BEACHHEAD_TOKEN (or token in config file)');
-    servers = [{ serverUrl: serverUrl.replace(/\/$/, ''), token }];
+    const singleUrl = process.env.BEACHHEAD_URL || file.serverUrl;
+    const singleToken = process.env.BEACHHEAD_TOKEN || file.token;
+    if (!singleUrl) die('Missing BEACHHEAD_URL (or BEACHHEAD_URLS / BEACHHEAD_SERVERS in config file)');
+    if (!singleToken) die('Missing BEACHHEAD_TOKEN (or BEACHHEAD_TOKENS / BEACHHEAD_SERVERS in config file)');
+    servers = [{ serverUrl: singleUrl.replace(/\/$/, ''), token: singleToken }];
   }
 
   return { servers, workerId, pollInterval, workDir, githubToken, buildPlatform };
@@ -230,21 +237,26 @@ async function processJob(config, server, job) {
 
 async function pollOnce(config) {
   const { workerId } = config;
-  let hadJob = false;
 
+  // First: claim one job from each server that has work pending (fast, sequential)
+  const claimed = [];
   for (const server of config.servers) {
     try {
       const { status, data } = await apiRequest(server.serverUrl, 'POST', '/api/jobs/next', { worker_id: workerId }, server.token);
       if (status === 204 || !data || !data.id) continue;
       log(`Claimed job #${data.id} from ${server.serverUrl}: service="${data.service}" image="${data.image_tag}"`);
-      await processJob(config, server, data);
-      hadJob = true;
+      claimed.push({ server, job: data });
     } catch (err) {
       log(`Poll error for ${server.serverUrl}: ${err.message}`);
     }
   }
 
-  return hadJob;
+  if (claimed.length === 0) return false;
+
+  // Then: process all claimed jobs in parallel so a long build on one server
+  // doesn't block work from another server.
+  await Promise.all(claimed.map(({ server, job }) => processJob(config, server, job)));
+  return true;
 }
 
 async function startLoop(config) {
