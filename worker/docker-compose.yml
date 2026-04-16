@@ -4,9 +4,15 @@ services:
     container_name: beachhead-worker
     restart: unless-stopped
     environment:
-      - BEACHHEAD_URL=${BEACHHEAD_URL}
-      - BEACHHEAD_TOKEN=${BEACHHEAD_TOKEN}
+      # Single server (simple)
+      - BEACHHEAD_URL=${BEACHHEAD_URL:-}
+      - BEACHHEAD_TOKEN=${BEACHHEAD_TOKEN:-}
+      # Multiple servers — JSON array, overrides URL/TOKEN if set
+      # e.g. '[{"url":"https://bh1.example.com","token":"tok1"},{"url":"https://bh2.example.com","token":"tok2"}]'
+      - BEACHHEAD_SERVERS=${BEACHHEAD_SERVERS:-}
       - BEACHHEAD_WORKER_ID=${BEACHHEAD_WORKER_ID:-worker-01}
       - BEACHHEAD_POLL_INTERVAL=${BEACHHEAD_POLL_INTERVAL:-5000}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - BEACHHEAD_BUILD_PLATFORM=${BEACHHEAD_BUILD_PLATFORM:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

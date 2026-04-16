@@ -28,10 +28,38 @@ function loadConfig() {
   const pollInterval = parseInt(process.env.BEACHHEAD_POLL_INTERVAL || file.pollInterval || CONFIG_DEFAULTS.pollInterval, 10);
   const workDir = process.env.BEACHHEAD_WORK_DIR || file.workDir || CONFIG_DEFAULTS.workDir;
 
-  if (!serverUrl) die('Missing BEACHHEAD_URL (or serverUrl in config file)');
-  if (!token) die('Missing BEACHHEAD_TOKEN (or token in config file)');
+  const githubToken = process.env.GITHUB_TOKEN || file.githubToken || null;
+  const buildPlatform = process.env.BEACHHEAD_BUILD_PLATFORM || file.buildPlatform || null;
 
-  return { serverUrl: serverUrl.replace(/\/$/, ''), token, workerId, pollInterval, workDir };
+  // ── Multi-server support ──────────────────────────────────────────
+  // Priority: BEACHHEAD_SERVERS JSON env var → config file `servers` array → single server fallback
+  let servers = [];
+
+  if (process.env.BEACHHEAD_SERVERS) {
+    let parsed;
+    try { parsed = JSON.parse(process.env.BEACHHEAD_SERVERS); } catch { die('BEACHHEAD_SERVERS must be valid JSON'); }
+    if (!Array.isArray(parsed)) die('BEACHHEAD_SERVERS must be a JSON array');
+    servers = parsed.map(s => ({
+      serverUrl: (s.url || s.serverUrl || '').replace(/\/$/, ''),
+      token: s.token || '',
+    })).filter(s => s.serverUrl && s.token);
+    if (servers.length === 0) die('BEACHHEAD_SERVERS contained no valid entries (each needs url and token)');
+  } else if (Array.isArray(file.servers) && file.servers.length > 0) {
+    servers = file.servers.map(s => ({
+      serverUrl: (s.url || s.serverUrl || '').replace(/\/$/, ''),
+      token: s.token || '',
+    })).filter(s => s.serverUrl && s.token);
+    if (servers.length === 0) die('Config file `servers` array contained no valid entries');
+  } else {
+    // Single-server backwards compat
+    const serverUrl = process.env.BEACHHEAD_URL || file.serverUrl;
+    const token = process.env.BEACHHEAD_TOKEN || file.token;
+    if (!serverUrl) die('Missing BEACHHEAD_URL (or serverUrl / servers in config file)');
+    if (!token) die('Missing BEACHHEAD_TOKEN (or token in config file)');
+    servers = [{ serverUrl: serverUrl.replace(/\/$/, ''), token }];
+  }
+
+  return { servers, workerId, pollInterval, workDir, githubToken, buildPlatform };
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -105,8 +133,9 @@ function runCmd(cmd, args, opts = {}) {
 
 // ─── Build Job Processing ───────────────────────────────────────────
 
-async function processJob(config, job) {
-  const { serverUrl, token, workDir } = config;
+async function processJob(config, server, job) {
+  const { serverUrl, token } = server;
+  const { workDir } = config;
   const jobDir = path.join(workDir, `job-${job.id}`);
 
   try {
@@ -120,9 +149,13 @@ async function processJob(config, job) {
       log: `Worker ${config.workerId} starting build for ${job.service}`,
     }, token);
 
-    // Clone the repo
+    // Clone the repo — inject GitHub token for private repos if configured
+    let cloneUrl = job.repo_url;
+    if (config.githubToken && /^https:\/\/github\.com\//i.test(cloneUrl)) {
+      cloneUrl = cloneUrl.replace('https://github.com/', `https://x-access-token:${config.githubToken}@github.com/`);
+    }
     log(`  Cloning ${job.repo_url} (${job.branch})...`);
-    await runCmd('git', ['clone', '--depth', '1', '--branch', job.branch, job.repo_url, '.'], { cwd: jobDir });
+    await runCmd('git', ['clone', '--depth', '1', '--branch', job.branch, cloneUrl, '.'], { cwd: jobDir });
 
     // Determine build context and dockerfile relative to repo root
     const buildContext = path.join(jobDir, job.build_context || '.');
@@ -135,12 +168,10 @@ async function processJob(config, job) {
 
     // Build the image
     log(`  Building image ${job.image_tag}...`);
-    await runCmd('docker', [
-      'build',
-      '-t', job.image_tag,
-      '-f', dockerfilePath,
-      buildContext,
-    ]);
+    const buildArgs = ['build', '-t', job.image_tag, '-f', dockerfilePath];
+    if (config.buildPlatform) buildArgs.push('--platform', config.buildPlatform);
+    buildArgs.push(buildContext);
+    await runCmd('docker', buildArgs);
 
     // Report PUSHING
     await apiRequest(serverUrl, 'POST', `/api/jobs/${job.id}/status`, {
@@ -177,6 +208,7 @@ async function processJob(config, job) {
     log(`  Job #${job.id} completed successfully`);
   } catch (err) {
     log(`  Job #${job.id} failed: ${err.message}`);
+    if (err.stderr) log(`  stderr: ${err.stderr.slice(0, 2000)}`);
     const logMsg = [err.message, err.stderr || ''].join('\n').slice(0, 4000);
     try {
       await apiRequest(serverUrl, 'POST', `/api/jobs/${job.id}/complete`, {
@@ -197,22 +229,32 @@ async function processJob(config, job) {
 // ─── Main Loop ──────────────────────────────────────────────────────
 
 async function pollOnce(config) {
-  const { serverUrl, token, workerId } = config;
+  const { workerId } = config;
+  let hadJob = false;
 
-  const { status, data } = await apiRequest(serverUrl, 'POST', '/api/jobs/next', { worker_id: workerId }, token);
-
-  if (status === 204 || !data || !data.id) {
-    return false; // no jobs
+  for (const server of config.servers) {
+    try {
+      const { status, data } = await apiRequest(server.serverUrl, 'POST', '/api/jobs/next', { worker_id: workerId }, server.token);
+      if (status === 204 || !data || !data.id) continue;
+      log(`Claimed job #${data.id} from ${server.serverUrl}: service="${data.service}" image="${data.image_tag}"`);
+      await processJob(config, server, data);
+      hadJob = true;
+    } catch (err) {
+      log(`Poll error for ${server.serverUrl}: ${err.message}`);
+    }
   }
 
-  log(`Claimed job #${data.id}: service="${data.service}" image="${data.image_tag}"`);
-  await processJob(config, data);
-  return true;
+  return hadJob;
 }
 
 async function startLoop(config) {
   log(`Beachhead Worker starting`);
-  log(`  Server: ${config.serverUrl}`);
+  if (config.servers.length === 1) {
+    log(`  Server: ${config.servers[0].serverUrl}`);
+  } else {
+    log(`  Servers (${config.servers.length}):`);
+    config.servers.forEach((s, i) => log(`    [${i + 1}] ${s.serverUrl}`));
+  }
   log(`  Worker ID: ${config.workerId}`);
   log(`  Poll Interval: ${config.pollInterval}ms`);
   log(`  Work Dir: ${config.workDir}`);
@@ -255,16 +297,24 @@ Usage:
   beachhead-worker help        Show this help
 
 Configuration (env vars or ~/.beachhead-worker.json):
-  BEACHHEAD_URL           Beachhead server URL (required)
-  BEACHHEAD_TOKEN         API token / JWT (required)
-  BEACHHEAD_WORKER_ID     Worker identifier (default: hostname)
-  BEACHHEAD_POLL_INTERVAL Poll interval in ms (default: 5000)
-  BEACHHEAD_WORK_DIR      Temp directory for builds (default: /tmp/beachhead-worker)
+  BEACHHEAD_URL             Beachhead server URL (single server)
+  BEACHHEAD_TOKEN           API token / JWT (single server)
+  BEACHHEAD_SERVERS         JSON array for multiple servers (overrides URL/TOKEN)
+  BEACHHEAD_WORKER_ID       Worker identifier (default: hostname)
+  BEACHHEAD_POLL_INTERVAL   Poll interval in ms (default: 5000)
+  BEACHHEAD_WORK_DIR        Temp directory for builds (default: /tmp/beachhead-worker)
+  GITHUB_TOKEN              GitHub PAT for cloning private repos (needs repo read scope)
+  BEACHHEAD_BUILD_PLATFORM  Target platform for docker build (e.g. linux/amd64, linux/arm64)
+
+Multi-server example (BEACHHEAD_SERVERS env var):
+  '[{"url":"https://bh1.example.com","token":"tok1"},{"url":"https://bh2.example.com","token":"tok2"}]'
 
 Config file example (~/.beachhead-worker.json):
   {
-    "serverUrl": "https://beachhead.example.com",
-    "token": "your-jwt-token",
+    "servers": [
+      { "url": "https://bh1.example.com", "token": "tok1" },
+      { "url": "https://bh2.example.com", "token": "tok2" }
+    ],
     "workerId": "builder-01"
   }
   `);
