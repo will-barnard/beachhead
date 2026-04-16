@@ -1,0 +1,12 @@
+services:
+  beachhead-worker:
+    build: .
+    container_name: beachhead-worker
+    restart: unless-stopped
+    environment:
+      - BEACHHEAD_URL=${BEACHHEAD_URL}
+      - BEACHHEAD_TOKEN=${BEACHHEAD_TOKEN}
+      - BEACHHEAD_WORKER_ID=${BEACHHEAD_WORKER_ID:-worker-01}
+      - BEACHHEAD_POLL_INTERVAL=${BEACHHEAD_POLL_INTERVAL:-5000}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

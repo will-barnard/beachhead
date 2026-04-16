@@ -26,6 +26,19 @@ const Settings = {
   },
 
   async getRegistryConfig() {
+    const type = (await this.get('registry_type')) || 'generic';
+
+    if (type === 'ghcr') {
+      const owner = (await this.get('ghcr_owner')) || '';
+      const token = (await this.get('ghcr_token')) || '';
+      return {
+        url: owner ? `ghcr.io/${owner}` : '',
+        user: owner,
+        password: token,
+      };
+    }
+
+    // Generic registry
     return {
       url: (await this.get('registry_url')) || '',
       user: (await this.get('registry_user')) || '',

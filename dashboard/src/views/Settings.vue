@@ -76,7 +76,36 @@
           The server then pulls the images during deployment.
         </p>
 
-        <div style="display: flex; flex-direction: column; gap: 0.75rem; max-width: 400px;">
+        <div style="margin-bottom: 1rem;">
+          <label>Registry Type</label>
+          <div style="display: flex; gap: 1rem; margin-top: 0.25rem;">
+            <label style="display: flex; align-items: center; gap: 0.35rem; cursor: pointer;">
+              <input type="radio" v-model="buildSettings.registry_type" value="ghcr" />
+              GitHub Container Registry (ghcr.io)
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.35rem; cursor: pointer;">
+              <input type="radio" v-model="buildSettings.registry_type" value="generic" />
+              Other registry
+            </label>
+          </div>
+        </div>
+
+        <div v-if="buildSettings.registry_type === 'ghcr'" style="display: flex; flex-direction: column; gap: 0.75rem; max-width: 400px;">
+          <p style="color: var(--muted); font-size: 0.85rem; margin: 0;">
+            Images will be pushed to <code>ghcr.io/OWNER/app-service:tag</code>.<br/>
+            Create a <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">Personal Access Token</a> with <code>write:packages</code> scope.
+          </p>
+          <div>
+            <label>GitHub Owner / Org</label>
+            <input v-model="buildSettings.ghcr_owner" placeholder="e.g. my-github-username" style="width: 100%;" />
+          </div>
+          <div>
+            <label>GitHub PAT</label>
+            <input v-model="buildSettings.ghcr_token" type="password" autocomplete="new-password" style="width: 100%;" placeholder="(unchanged if left blank)" />
+          </div>
+        </div>
+
+        <div v-else style="display: flex; flex-direction: column; gap: 0.75rem; max-width: 400px;">
           <div>
             <label>Registry URL</label>
             <input v-model="buildSettings.registry_url" placeholder="e.g. registry.example.com/myproject" style="width: 100%;" />
@@ -113,9 +142,12 @@ export default {
     adding: false,
     buildSettings: {
       build_mode: 'local',
+      registry_type: 'ghcr',
       registry_url: '',
       registry_user: '',
       registry_password: '',
+      ghcr_owner: '',
+      ghcr_token: '',
     },
     buildError: null,
     buildSuccess: null,
@@ -176,9 +208,12 @@ export default {
       try {
         const settings = await api.getSettings();
         this.buildSettings.build_mode = settings.build_mode || 'local';
+        this.buildSettings.registry_type = settings.registry_type || 'ghcr';
         this.buildSettings.registry_url = settings.registry_url || '';
         this.buildSettings.registry_user = settings.registry_user || '';
         this.buildSettings.registry_password = '';  // never display — show placeholder
+        this.buildSettings.ghcr_owner = settings.ghcr_owner || '';
+        this.buildSettings.ghcr_token = '';  // never display — show placeholder
       } catch {
         // settings may not exist yet
       }
@@ -189,11 +224,13 @@ export default {
       this.savingBuild = true;
       try {
         const payload = { ...this.buildSettings };
-        // Don't send empty password (means "keep existing")
+        // Don't send empty secrets (means "keep existing")
         if (!payload.registry_password) delete payload.registry_password;
+        if (!payload.ghcr_token) delete payload.ghcr_token;
         await api.updateSettings(payload);
         this.buildSuccess = 'Build settings saved';
         this.buildSettings.registry_password = '';
+        this.buildSettings.ghcr_token = '';
       } catch (e) {
         this.buildError = e.message;
       } finally {

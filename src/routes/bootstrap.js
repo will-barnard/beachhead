@@ -205,6 +205,9 @@ router.get('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
     if (settings.registry_password) {
       settings.registry_password = settings.registry_password ? '••••••••' : '';
     }
+    if (settings.ghcr_token) {
+      settings.ghcr_token = settings.ghcr_token ? '••••••••' : '';
+    }
     res.json(settings);
   } catch (err) {
     logger.error('Failed to get settings', err);
@@ -217,7 +220,7 @@ router.get('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
  * Update settings (admin only). Accepts { key: value } pairs.
  */
 router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
-  const allowed = ['build_mode', 'registry_url', 'registry_user', 'registry_password'];
+  const allowed = ['build_mode', 'registry_type', 'registry_url', 'registry_user', 'registry_password', 'ghcr_owner', 'ghcr_token'];
   const updates = req.body;
 
   if (!updates || typeof updates !== 'object') {
@@ -230,13 +233,18 @@ router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
       if (key === 'build_mode' && !['local', 'remote'].includes(value)) {
         return res.status(400).json({ error: 'build_mode must be "local" or "remote"' });
       }
+      if (key === 'registry_type' && !['generic', 'ghcr'].includes(value)) {
+        return res.status(400).json({ error: 'registry_type must be "generic" or "ghcr"' });
+      }
       // Skip masked password — don't overwrite with placeholder
       if (key === 'registry_password' && value === '••••••••') continue;
+      if (key === 'ghcr_token' && value === '••••••••') continue;
       await Settings.set(key, String(value));
     }
     logger.info(`Settings updated by ${req.user.username || 'bootstrap'}`);
     const settings = await Settings.getAll();
     if (settings.registry_password) settings.registry_password = '••••••••';
+    if (settings.ghcr_token) settings.ghcr_token = '••••••••';
     res.json(settings);
   } catch (err) {
     logger.error(`Settings update failed: ${err.message}`);

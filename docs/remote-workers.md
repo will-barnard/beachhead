@@ -120,6 +120,48 @@ Then just run:
 beachhead-worker start
 ```
 
+### Option D: Run as a Docker container
+
+The worker ships with its own `Dockerfile` and `docker-compose.yml` inside the
+`worker/` directory. It needs access to the Docker socket to build and push images.
+
+**On a remote machine:**
+
+Copy the `worker/` directory to the machine, create a `.env` file, and start it:
+
+```bash
+cd beachhead/worker
+
+cat > .env << 'EOF'
+BEACHHEAD_URL=https://beachhead.example.com
+BEACHHEAD_TOKEN=your-jwt-token
+BEACHHEAD_WORKER_ID=builder-01
+EOF
+
+docker compose up -d
+
+# Check logs
+docker compose logs -f
+```
+
+**Co-located on the Beachhead server:**
+
+```bash
+cd beachhead/worker
+
+cat > .env << 'EOF'
+BEACHHEAD_URL=https://beachhead.example.com
+BEACHHEAD_TOKEN=your-jwt-token
+BEACHHEAD_WORKER_ID=worker-local
+EOF
+
+docker compose up -d
+```
+
+> **Note**: The worker container mounts the host's Docker socket, so builds
+> run on the host Docker daemon. The container itself only needs Node.js,
+> Git, and the Docker CLI.
+
 ## Step 4: Run as a Service (recommended)
 
 Create a systemd service so the worker starts on boot:
