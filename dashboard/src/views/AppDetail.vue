@@ -6,6 +6,7 @@
       <h2>{{ app.name }}</h2>
       <div>
         <button class="btn" @click="triggerDeploy" style="margin-right:0.5rem;">Deploy Now</button>
+        <button class="btn btn-warning" @click="wipeAndRedeploy" style="margin-right:0.5rem;">Wipe &amp; Redeploy</button>
         <button class="btn btn-warning" @click="cancelDeployment" style="margin-right:0.5rem;">Cancel Stuck Deploy</button>
         <button class="btn btn-danger" @click="deleteApp">Delete</button>
       </div>
@@ -295,6 +296,16 @@ export default {
         await this.load();
       } catch (e) {
         alert('Deploy failed: ' + e.message);
+      }
+    },
+    async wipeAndRedeploy() {
+      if (!confirm(`⚠️ This will DESTROY all containers, deployment files, and database records for "${this.app.name}" and start a fresh deploy. Data stored in non-persistent volumes will be lost.\n\nAre you sure?`)) return;
+      if (!confirm(`FINAL WARNING: This is irreversible. Type OK to confirm you want to wipe "${this.app.name}" and redeploy from scratch.`)) return;
+      try {
+        await api.wipeAndRedeploy(this.app.id);
+        await this.load();
+      } catch (e) {
+        alert('Wipe & Redeploy failed: ' + e.message);
       }
     },
     async cancelDeployment() {

@@ -7,7 +7,7 @@ const Deployments = require('../models/deployments');
 const EnvVars = require('../models/envVars');
 const StaticSites = require('../models/staticSites');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
-const { dockerComposeDown, dockerComposeRecreate, dockerComposeUpNoBuild, ensureNetwork } = require('../services/docker');
+const { dockerComposeDown, dockerComposeRecreate, dockerComposeUpNoBuild, stopComposeProject, ensureNetwork } = require('../services/docker');
 const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames } = require('../services/composeWrapper');
 const { checkHealth } = require('../services/healthCheck');
 const config = require('../config');
@@ -182,6 +182,61 @@ router.post('/:id/deploy', async (req, res) => {
   } catch (err) {
     logger.error('Failed to trigger deployment', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Wipe all deployment files, DB records, and containers — then redeploy
+router.post('/:id/wipe-and-redeploy', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+
+    logger.info(`Wipe & redeploy requested for ${app.name} (id=${app.id})`);
+
+    // 1. Stop all running containers for every deployment
+    const allDeps = await Deployments.findByAppId(app.id, 1000);
+    for (const dep of allDeps) {
+      const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${dep.id}`);
+      try {
+        if (fs.existsSync(path.join(deployDir, 'beachhead.override.yml'))) {
+          await dockerComposeDown(deployDir, 'beachhead.override.yml');
+        } else {
+          await stopComposeProject(`deploy-${dep.id}`);
+        }
+        logger.info(`Stopped containers for deploy #${dep.id}`);
+      } catch (err) {
+        logger.warn(`Could not stop containers for deploy #${dep.id}: ${err.message}`);
+      }
+    }
+
+    // 2. Remove the entire app deployment directory
+    const appDir = path.join(config.deploy.baseDir, `app-${app.id}`);
+    if (fs.existsSync(appDir)) {
+      fs.rmSync(appDir, { recursive: true, force: true });
+      logger.info(`Removed deployment directory: ${appDir}`);
+    }
+
+    // 3. Purge deployment records from DB
+    const depIds = allDeps.map(d => d.id);
+    if (depIds.length > 0) {
+      await Deployments.deleteByIds(depIds);
+      logger.info(`Deleted ${depIds.length} deployment record(s)`);
+    }
+
+    // 4. Clear active deployment
+    await Apps.update(app.id, { active_deployment_id: null });
+
+    // 5. Trigger a fresh deployment
+    const newDeploy = await Deployments.create({
+      app_id: app.id,
+      commit_hash: null,
+    });
+
+    logger.info(`Wipe complete for ${app.name} — new deployment #${newDeploy.id}`);
+    res.status(201).json({ message: 'Wiped and redeployment queued', deployment: newDeploy });
+  } catch (err) {
+    logger.error(`Wipe & redeploy failed for app ${req.params.id}: ${err.message}`);
+    res.status(500).json({ error: err.message });
   }
 });
 

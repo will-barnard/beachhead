@@ -29,6 +29,7 @@ export default {
   updateApp: (id, app) => request(`/apps/${id}`, { method: 'PUT', body: app }),
   deleteApp: (id) => request(`/apps/${id}`, { method: 'DELETE' }),
   deploy: (id, data) => request(`/apps/${id}/deploy`, { method: 'POST', body: data || {} }),
+  wipeAndRedeploy: (id) => request(`/apps/${id}/wipe-and-redeploy`, { method: 'POST', body: {} }),
   cancelDeployment: (id) => request(`/apps/${id}/cancel-deployment`, { method: 'POST', body: {} }),
   enableWwwRedirect: (id) => request(`/apps/${id}/www`, { method: 'POST', body: {} }),
   getEndpoints: (appId) => request(`/apps/${appId}/endpoints`),
