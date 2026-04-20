@@ -122,6 +122,10 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ error: 'repo_url must be an HTTPS URL or SSH git URL (git@host:org/repo)' });
     }
 
+    if (repo_url) {
+      req.body.repo_url = repo_url.replace(/\.git$/, '').replace(/\/+$/, '');
+    }
+
     if (branch && (!/^[a-zA-Z0-9._\/-]+$/.test(branch) || branch.includes('..'))) {
       return res.status(400).json({ error: 'Invalid branch name' });
     }
@@ -130,7 +134,13 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ error: 'public_port must be between 1 and 65535' });
     }
 
-    const updated = await Apps.update(req.params.id, req.body);
+    // Coerce empty strings to null for integer/optional fields before writing to DB
+    const payload = { ...req.body };
+    if (payload.public_port === '' || payload.public_port === null) payload.public_port = null;
+    else if (payload.public_port !== undefined) payload.public_port = parseInt(payload.public_port, 10);
+    if (payload.active_deployment_id === '') payload.active_deployment_id = null;
+
+    const updated = await Apps.update(req.params.id, payload);
     logger.info(`App updated: ${updated.name} (id=${updated.id})`);
     res.json(updated);
   } catch (err) {
