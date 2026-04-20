@@ -241,8 +241,8 @@ async function processJob(config, server, job) {
     log(`  Job #${job.id} completed successfully`);
   } catch (err) {
     log(`  Job #${job.id} failed: ${err.message}`);
-    if (err.stderr) log(`  stderr: ${err.stderr.slice(0, 2000)}`);
-    const logMsg = [err.message, err.stderr || ''].join('\n').slice(0, 4000);
+    if (err.stderr) log(`  stderr (last 4000 chars): ${err.stderr.slice(-4000)}`);
+    const logMsg = [err.message, (err.stderr || '').slice(-4000)].join('\n').slice(0, 8000);
     try {
       await apiRequest(serverUrl, 'POST', `/api/jobs/${job.id}/complete`, {
         success: false,
