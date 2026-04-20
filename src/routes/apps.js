@@ -50,9 +50,9 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'name, repo_url, and domain are required' });
     }
 
-    // Validate repo_url format
-    if (!/^https?:\/\/.+/.test(repo_url)) {
-      return res.status(400).json({ error: 'repo_url must be an HTTP(S) URL' });
+    // Validate repo_url format (HTTPS or SSH)
+    if (!/^https?:\/\/.+/.test(repo_url) && !/^git@[^:]+:.+\/.+/.test(repo_url)) {
+      return res.status(400).json({ error: 'repo_url must be an HTTPS URL or SSH git URL (git@host:org/repo)' });
     }
 
     // Validate domain format
@@ -71,6 +71,7 @@ router.post('/', async (req, res) => {
     }
 
     // Normalize repo_url: strip .git suffix and trailing slashes so webhook matching is reliable
+    // SSH URLs (git@github.com:org/repo.git) — only strip trailing .git and slashes, preserve the colon
     const normalizedRepoUrl = repo_url.replace(/\.git$/, '').replace(/\/+$/, '');
 
     const existing = await Apps.findByDomain(domain);
@@ -117,8 +118,8 @@ router.put('/:id', async (req, res) => {
       }
     }
 
-    if (repo_url && !/^https?:\/\/.+/.test(repo_url)) {
-      return res.status(400).json({ error: 'repo_url must be an HTTP(S) URL' });
+    if (repo_url && !/^https?:\/\/.+/.test(repo_url) && !/^git@[^:]+:.+\/.+/.test(repo_url)) {
+      return res.status(400).json({ error: 'repo_url must be an HTTPS URL or SSH git URL (git@host:org/repo)' });
     }
 
     if (branch && (!/^[a-zA-Z0-9._\/-]+$/.test(branch) || branch.includes('..'))) {

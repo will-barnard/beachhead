@@ -9,7 +9,7 @@
       </div>
       <div class="form-group">
         <label>Repository URL</label>
-        <input v-model="form.repo_url" required placeholder="https://github.com/user/repo" />
+        <input v-model="form.repo_url" required placeholder="https://github.com/user/repo or git@github.com:user/repo" />
       </div>
       <div class="form-group">
         <label>Domain</label>

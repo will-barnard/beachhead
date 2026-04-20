@@ -52,7 +52,7 @@
         </div>
         <div class="form-group" style="margin:0;">
           <label>Repository URL</label>
-          <input v-model="settingsForm.repo_url" placeholder="https://github.com/org/repo" />
+          <input v-model="settingsForm.repo_url" placeholder="https://github.com/org/repo or git@github.com:org/repo" />
         </div>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
           <div class="form-group" style="margin:0;">

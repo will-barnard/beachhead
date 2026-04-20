@@ -1,5 +1,6 @@
 const { execFile } = require('child_process');
 const logger = require('../logger');
+const Settings = require('../models/settings');
 
 /**
  * Execute a command safely and return { stdout, stderr, exitCode }.
@@ -39,9 +40,25 @@ function exec(command, args, options = {}) {
 
 /**
  * Git clone a repository.
+ * Supports HTTPS and SSH URLs.
+ * For SSH: set GIT_SSH_COMMAND in env, or provide GIT_SSH_KEY (path to private key file),
+ * or configure git_ssh_key_path in app settings.
  */
 async function gitClone(repoUrl, branch, destDir) {
-  await exec('git', ['clone', '--depth', '1', '--branch', branch, '--', repoUrl, destDir]);
+  const extraEnv = {};
+  if (process.env.GIT_SSH_KEY) {
+    extraEnv.GIT_SSH_COMMAND = `ssh -i ${process.env.GIT_SSH_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`;
+  } else if (process.env.GIT_SSH_COMMAND) {
+    extraEnv.GIT_SSH_COMMAND = process.env.GIT_SSH_COMMAND;
+  } else {
+    // Fall back to key path stored in settings DB
+    const keyPath = await Settings.get('git_ssh_key_path');
+    if (keyPath) {
+      const resolved = keyPath.replace(/^~/, process.env.HOME || '');
+      extraEnv.GIT_SSH_COMMAND = `ssh -i ${resolved} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`;
+    }
+  }
+  await exec('git', ['clone', '--depth', '1', '--branch', branch, '--', repoUrl, destDir], { env: extraEnv });
 }
 
 /**

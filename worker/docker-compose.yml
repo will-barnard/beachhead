@@ -15,6 +15,7 @@ services:
       - BEACHHEAD_WORKER_ID=${BEACHHEAD_WORKER_ID:-worker-01}
       - BEACHHEAD_POLL_INTERVAL=${BEACHHEAD_POLL_INTERVAL:-5000}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - SSH_PRIVATE_KEY=${SSH_PRIVATE_KEY:-}
       - BEACHHEAD_BUILD_PLATFORM=${BEACHHEAD_BUILD_PLATFORM:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

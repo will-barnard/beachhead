@@ -131,7 +131,16 @@
         </div>
       </div>
 
-      <button class="btn" @click="saveBuildSettings" :disabled="savingBuild">
+      <div style="margin-top: 1.5rem; max-width: 400px;">
+        <label>Git SSH Key Path</label>
+        <input v-model="buildSettings.git_ssh_key_path" placeholder="~/.ssh/id_rsa (leave blank to use HTTPS)" style="width: 100%;" />
+        <p style="color: var(--muted); font-size: 0.85rem; margin: 0.4rem 0 0;">
+          Path to the SSH private key on the server. Used when cloning <code>git@…</code> repos.
+          The key must already exist on the server filesystem.
+        </p>
+      </div>
+
+      <button class="btn" @click="saveBuildSettings" :disabled="savingBuild" style="margin-top: 1.5rem;">
         {{ savingBuild ? 'Saving...' : 'Save Build Settings' }}
       </button>
     </div>
@@ -161,6 +170,7 @@ export default {
       registry_password: '',
       ghcr_owner: '',
       ghcr_token: '',
+      git_ssh_key_path: '',
     },
     buildError: null,
     buildSuccess: null,
@@ -247,6 +257,7 @@ export default {
         this.buildSettings.registry_password = '';  // never display — show placeholder
         this.buildSettings.ghcr_owner = settings.ghcr_owner || '';
         this.buildSettings.ghcr_token = '';  // never display — show placeholder
+        this.buildSettings.git_ssh_key_path = settings.git_ssh_key_path || '';
       } catch {
         // settings may not exist yet
       }

@@ -241,7 +241,7 @@ router.post('/worker-token', requireAuth, requireSuperAdmin, async (req, res) =>
  * Update settings (admin only). Accepts { key: value } pairs.
  */
 router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
-  const allowed = ['build_mode', 'registry_type', 'registry_url', 'registry_user', 'registry_password', 'ghcr_owner', 'ghcr_token'];
+  const allowed = ['build_mode', 'registry_type', 'registry_url', 'registry_user', 'registry_password', 'ghcr_owner', 'ghcr_token', 'git_ssh_key_path'];
   const updates = req.body;
 
   if (!updates || typeof updates !== 'object') {

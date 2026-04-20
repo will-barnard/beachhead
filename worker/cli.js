@@ -28,6 +28,7 @@ function loadConfig() {
 
   const githubToken = process.env.GITHUB_TOKEN || file.githubToken || null;
   const buildPlatform = process.env.BEACHHEAD_BUILD_PLATFORM || file.buildPlatform || null;
+  const sshPrivateKey = process.env.SSH_PRIVATE_KEY || file.sshPrivateKey || null;
 
   // ── Multi-server support ──────────────────────────────────────────
   // Priority:
@@ -66,7 +67,7 @@ function loadConfig() {
     servers = [{ serverUrl: singleUrl.replace(/\/$/, ''), token: singleToken }];
   }
 
-  return { servers, workerId, pollInterval, workDir, githubToken, buildPlatform };
+  return { servers, workerId, pollInterval, workDir, githubToken, buildPlatform, sshPrivateKey };
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -156,13 +157,38 @@ async function processJob(config, server, job) {
       log: `Worker ${config.workerId} starting build for ${job.service}`,
     }, token);
 
-    // Clone the repo — inject GitHub token for private repos if configured
+    // Clone the repo
     let cloneUrl = job.repo_url;
-    if (config.githubToken && /^https:\/\/github\.com\//i.test(cloneUrl)) {
+    const isSsh = /^git@/i.test(cloneUrl);
+
+    // For HTTPS GitHub repos, inject token to authenticate private repos
+    if (!isSsh && config.githubToken && /^https:\/\/github\.com\//i.test(cloneUrl)) {
       cloneUrl = cloneUrl.replace('https://github.com/', `https://x-access-token:${config.githubToken}@github.com/`);
     }
+
+    // For SSH repos, write the private key to a temp file and set GIT_SSH_COMMAND
+    let sshKeyFile = null;
+    let cloneEnv = {};
+    if (isSsh && config.sshPrivateKey) {
+      sshKeyFile = path.join(os.tmpdir(), `beachhead-ssh-${process.pid}-${job.id}`);
+      // Ensure key ends with newline (required by OpenSSH)
+      const keyContent = config.sshPrivateKey.replace(/\\n/g, '\n').trimEnd() + '\n';
+      fs.writeFileSync(sshKeyFile, keyContent, { mode: 0o600 });
+      cloneEnv = {
+        ...process.env,
+        GIT_SSH_COMMAND: `ssh -i ${sshKeyFile} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`,
+      };
+    }
+
     log(`  Cloning ${job.repo_url} (${job.branch})...`);
-    await runCmd('git', ['clone', '--depth', '1', '--branch', job.branch, cloneUrl, '.'], { cwd: jobDir });
+    try {
+      await runCmd('git', ['clone', '--depth', '1', '--branch', job.branch, cloneUrl, '.'], {
+        cwd: jobDir,
+        ...(isSsh && sshKeyFile ? { env: cloneEnv } : {}),
+      });
+    } finally {
+      if (sshKeyFile && fs.existsSync(sshKeyFile)) fs.unlinkSync(sshKeyFile);
+    }
 
     // Determine build context and dockerfile relative to repo root
     const buildContext = path.join(jobDir, job.build_context || '.');
