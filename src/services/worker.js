@@ -6,7 +6,7 @@ const AppEndpoints = require('../models/appEndpoints');
 const StaticSites = require('../models/staticSites');
 const EnvVars = require('../models/envVars');
 const { EnvFiles } = require('../models/envFiles');
-const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames, readServiceVolumes, readBuildableServices, generateStatefulOverride } = require('./composeWrapper');
+const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames, readServiceVolumes, readBuildableServices, generateStatefulOverride, stripHostPorts } = require('./composeWrapper');
 const { exec, gitClone, dockerComposeUp, dockerComposeUpNoBuild, dockerComposeUpStateful, stopContainersUsingVolume, stopComposeProject, dockerComposeDown, dockerComposeLogs, ensureNetwork } = require('./docker');
 const { checkHealth } = require('./healthCheck');
 const config = require('../config');
@@ -138,6 +138,10 @@ async function processDeployment(deployment) {
     }
     fs.mkdirSync(deployDir, { recursive: true });
     await gitClone(app.repo_url, app.branch, deployDir);
+
+    // Remove host port bindings — nginx-proxy handles routing and host ports
+    // prevent blue-green deploys when old containers still hold the port.
+    stripHostPorts(deployDir);
 
     // Read beachhead.json if present (can override public_service, public_port)
     const bhConfig = readBeachheadConfig(deployDir);

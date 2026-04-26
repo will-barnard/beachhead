@@ -325,6 +325,67 @@ function readBuildableServices(deployDir) {
   }
 }
 
+/**
+ * Strip host port bindings from docker-compose.yml in the deploy directory.
+ * Beachhead routes traffic via nginx-proxy using VIRTUAL_HOST — host port bindings
+ * are never needed and prevent blue-green deploys when the old containers still hold
+ * the port. Converts `"HOST:CONTAINER"` → removes the entry entirely; leaves
+ * container-only expose entries (no colon, or single number) untouched if desired.
+ *
+ * Rewrites the file in place; logs a warning if any ports were stripped.
+ */
+function stripHostPorts(deployDir) {
+  const composePath = path.join(deployDir, 'docker-compose.yml');
+  if (!fs.existsSync(composePath)) return;
+
+  let doc;
+  let raw;
+  try {
+    raw = fs.readFileSync(composePath, 'utf8');
+    doc = yaml.load(raw);
+  } catch (err) {
+    logger.warn(`stripHostPorts: failed to parse docker-compose.yml: ${err.message}`);
+    return;
+  }
+
+  if (!doc || !doc.services) return;
+
+  let stripped = 0;
+  for (const [serviceName, svc] of Object.entries(doc.services)) {
+    if (!svc || !Array.isArray(svc.ports) || svc.ports.length === 0) continue;
+
+    const filtered = svc.ports.filter((p) => {
+      // Long-form object: { target, published, ... } — if published is set, it's a host binding
+      if (typeof p === 'object' && p !== null) {
+        if (p.published !== undefined && p.published !== null && p.published !== '') {
+          stripped++;
+          return false;
+        }
+        return true;
+      }
+      // Short-form string: "host:container" or "host:container/proto" or just "container"
+      const str = String(p);
+      // If there's a colon it binds a host port
+      if (str.includes(':')) {
+        stripped++;
+        return false;
+      }
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      delete svc.ports;
+    } else {
+      svc.ports = filtered;
+    }
+  }
+
+  if (stripped > 0) {
+    logger.warn(`stripHostPorts: removed ${stripped} host port binding(s) from docker-compose.yml (not needed — nginx-proxy handles routing)`);
+    fs.writeFileSync(composePath, yaml.dump(doc, { lineWidth: -1 }), 'utf8');
+  }
+}
+
 module.exports = {
   generateOverride,
   writeOverrideFile,
@@ -334,4 +395,5 @@ module.exports = {
   readServiceVolumes,
   readBuildableServices,
   generateStatefulOverride,
+  stripHostPorts,
 };
