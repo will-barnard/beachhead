@@ -16,6 +16,7 @@ services:
       - BEACHHEAD_POLL_INTERVAL=${BEACHHEAD_POLL_INTERVAL:-5000}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - SSH_PRIVATE_KEY=${SSH_PRIVATE_KEY:-}
+      - BEACHHEAD_INSECURE_TLS=${BEACHHEAD_INSECURE_TLS:-}
       - BEACHHEAD_BUILD_PLATFORM=${BEACHHEAD_BUILD_PLATFORM:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

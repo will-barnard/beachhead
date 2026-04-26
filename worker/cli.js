@@ -29,6 +29,7 @@ function loadConfig() {
   const githubToken = process.env.GITHUB_TOKEN || file.githubToken || null;
   const buildPlatform = process.env.BEACHHEAD_BUILD_PLATFORM || file.buildPlatform || null;
   const sshPrivateKey = process.env.SSH_PRIVATE_KEY || file.sshPrivateKey || null;
+  const insecureTls = process.env.BEACHHEAD_INSECURE_TLS === '1' || process.env.BEACHHEAD_INSECURE_TLS === 'true' || file.insecureTls === true;
 
   // ── Multi-server support ──────────────────────────────────────────
   // Priority:
@@ -67,7 +68,7 @@ function loadConfig() {
     servers = [{ serverUrl: singleUrl.replace(/\/$/, ''), token: singleToken }];
   }
 
-  return { servers, workerId, pollInterval, workDir, githubToken, buildPlatform, sshPrivateKey };
+  return { servers, workerId, pollInterval, workDir, githubToken, buildPlatform, sshPrivateKey, insecureTls };
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -84,7 +85,7 @@ function log(msg) {
  * Minimal HTTP client using built-in node modules (no dependencies).
  * Returns { status, data }.
  */
-function apiRequest(serverUrl, method, path, body, token) {
+function apiRequest(serverUrl, method, path, body, token, insecureTls = false) {
   return new Promise((resolve, reject) => {
     const url = new URL(path, serverUrl);
     const mod = url.protocol === 'https:' ? https : http;
@@ -95,6 +96,7 @@ function apiRequest(serverUrl, method, path, body, token) {
       hostname: url.hostname,
       port: url.port,
       path: url.pathname + url.search,
+      ...(insecureTls ? { rejectUnauthorized: false } : {}),
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
@@ -155,7 +157,7 @@ async function processJob(config, server, job) {
     await apiRequest(serverUrl, 'POST', `/api/jobs/${job.id}/status`, {
       state: 'BUILDING',
       log: `Worker ${config.workerId} starting build for ${job.service}`,
-    }, token);
+    }, token, config.insecureTls);
 
     // Clone the repo
     let cloneUrl = job.repo_url;
@@ -210,7 +212,7 @@ async function processJob(config, server, job) {
     await apiRequest(serverUrl, 'POST', `/api/jobs/${job.id}/status`, {
       state: 'PUSHING',
       log: `Pushing ${job.image_tag}`,
-    }, token);
+    }, token, config.insecureTls);
 
     // Docker login if registry credentials provided
     if (job.registry?.user && job.registry?.password) {
@@ -236,7 +238,7 @@ async function processJob(config, server, job) {
     await apiRequest(serverUrl, 'POST', `/api/jobs/${job.id}/complete`, {
       success: true,
       log: `Build and push successful: ${job.image_tag}`,
-    }, token);
+    }, token, config.insecureTls);
 
     log(`  Job #${job.id} completed successfully`);
   } catch (err) {
@@ -247,7 +249,7 @@ async function processJob(config, server, job) {
       await apiRequest(serverUrl, 'POST', `/api/jobs/${job.id}/complete`, {
         success: false,
         log: logMsg,
-      }, token);
+      }, token, config.insecureTls);
     } catch {
       log(`  WARNING: Failed to report failure for job #${job.id}`);
     }
@@ -268,7 +270,7 @@ async function pollOnce(config) {
   const claimed = [];
   for (const server of config.servers) {
     try {
-      const { status, data } = await apiRequest(server.serverUrl, 'POST', '/api/jobs/next', { worker_id: workerId }, server.token);
+      const { status, data } = await apiRequest(server.serverUrl, 'POST', '/api/jobs/next', { worker_id: workerId }, server.token, config.insecureTls);
       if (status === 204 || !data || !data.id) continue;
       log(`Claimed job #${data.id} from ${server.serverUrl}: service="${data.service}" image="${data.image_tag}"`);
       claimed.push({ server, job: data });
