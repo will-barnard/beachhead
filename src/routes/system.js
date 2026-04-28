@@ -1,8 +1,10 @@
 const { Router } = require('express');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const Apps = require('../models/apps');
 const Deployments = require('../models/deployments');
+const Settings = require('../models/settings');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
 const { exec, dockerComposeDown, stopComposeProject } = require('../services/docker');
 const config = require('../config');
@@ -10,6 +12,44 @@ const logger = require('../logger');
 
 const router = Router();
 router.use(requireAuth, requireSuperAdmin);
+
+// ── Network info ──
+
+/**
+ * GET /api/system/network-info
+ * Returns the static facts a user behind a NAT needs in order to expose
+ * Beachhead to the internet: the host's LAN IPv4 address(es) and the ports
+ * that must be reachable. No active probing — by design.
+ */
+router.get('/network-info', async (req, res) => {
+  try {
+    // os.networkInterfaces() inside the beachhead container reflects the
+    // container's interfaces, not the host's. Since the container is on a
+    // bridge network, we instead surface every non-loopback IPv4 we can find;
+    // the dashboard treats them as candidates and lets the user pick.
+    const ifaces = os.networkInterfaces();
+    const lanCandidates = [];
+    for (const [name, addrs] of Object.entries(ifaces)) {
+      for (const addr of addrs || []) {
+        if (addr.family === 'IPv4' && !addr.internal) {
+          lanCandidates.push({ iface: name, address: addr.address });
+        }
+      }
+    }
+    res.json({
+      networkMode: await Settings.getNetworkMode(),
+      lanCandidates,
+      requiredPorts: [
+        { port: 80,  protocol: 'tcp', purpose: 'HTTP (Let\'s Encrypt challenge + redirect to HTTPS)' },
+        { port: 443, protocol: 'tcp', purpose: 'HTTPS (dashboard + all deployed apps)' },
+      ],
+      note: 'In home_network mode, forward these ports from your router to this machine. All apps share these two ports — no per-app forwarding needed (nginx-proxy routes by Host header).',
+    });
+  } catch (err) {
+    logger.error('Failed to gather network info', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── Container Audit ──
 

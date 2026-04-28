@@ -10,7 +10,10 @@ services:
     environment:
       - NODE_ENV=production
       - DATABASE_URL=${DATABASE_URL}
-      - DEPLOY_BASE_DIR=/var/beachhead/deployments
+      # Host and container paths MUST match — the in-container code spawns
+      # `docker compose` against the host docker daemon, which sees these
+      # paths as host paths.
+      - DEPLOY_BASE_DIR=${DEPLOY_BASE_DIR:-/var/beachhead/deployments}
       - DOCKER_NETWORK=beachhead-net
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
       - AUTH_JWKS_URL=${AUTH_JWKS_URL:-}
@@ -21,7 +24,9 @@ services:
       - LETSENCRYPT_HOST=${BEACHHEAD_DOMAIN}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /var/beachhead/deployments:/var/beachhead/deployments
+      # Bind the deploy dir at the same path inside the container as on the
+      # host so paths in compose commands match across the boundary.
+      - ${DEPLOY_BASE_DIR:-/var/beachhead/deployments}:${DEPLOY_BASE_DIR:-/var/beachhead/deployments}
       - ./.env:/app/.env.host
       - ./nginx/vhost.d:/etc/nginx/vhost.d
     depends_on:

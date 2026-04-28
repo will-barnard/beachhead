@@ -179,6 +179,12 @@ const MIGRATIONS = [
       INSERT INTO settings (key, value) VALUES ('registry_password', '') ON CONFLICT DO NOTHING;
     `,
   },
+  {
+    name: '016_add_network_mode_setting',
+    sql: `
+      INSERT INTO settings (key, value) VALUES ('network_mode', 'direct') ON CONFLICT DO NOTHING;
+    `,
+  },
 ];
 
 async function migrate() {

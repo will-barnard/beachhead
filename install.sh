@@ -24,12 +24,28 @@ echo -e "${BOLD}  ⚓  Beachhead Installer${NC}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
+# ── Detect platform ───────────────────────────
+
+OS="$(uname -s)"
+case "$OS" in
+  Linux)  PLATFORM="linux"  ;;
+  Darwin) PLATFORM="macos"  ;;
+  *)      fail "Unsupported OS: $OS (only Linux and macOS are supported)" ;;
+esac
+info "Detected platform: ${PLATFORM}"
+
 # ── Install prerequisites ─────────────────────
 
 info "Checking and installing prerequisites..."
 
 # Detect package manager
-if command -v apt-get &>/dev/null; then
+if [[ "$PLATFORM" == "macos" ]]; then
+  if command -v brew &>/dev/null; then
+    PKG_MGR="brew"
+  else
+    PKG_MGR=""
+  fi
+elif command -v apt-get &>/dev/null; then
   PKG_MGR="apt"
 elif command -v yum &>/dev/null; then
   PKG_MGR="yum"
@@ -42,13 +58,17 @@ fi
 install_pkg() {
   local pkg="$1"
   if [[ -z "$PKG_MGR" ]]; then
+    if [[ "$PLATFORM" == "macos" ]]; then
+      fail "Homebrew not found. Install it from https://brew.sh, then re-run this script (or install $pkg manually)."
+    fi
     fail "No supported package manager found (apt/yum/dnf). Install $pkg manually."
   fi
   info "Installing $pkg..."
   case "$PKG_MGR" in
-    apt) sudo apt-get update -qq && sudo apt-get install -y -qq "$pkg" ;;
-    yum) sudo yum install -y -q "$pkg" ;;
-    dnf) sudo dnf install -y -q "$pkg" ;;
+    brew) brew install "$pkg" ;;
+    apt)  sudo apt-get update -qq && sudo apt-get install -y -qq "$pkg" ;;
+    yum)  sudo yum install -y -q "$pkg" ;;
+    dnf)  sudo dnf install -y -q "$pkg" ;;
   esac
 }
 
@@ -65,6 +85,9 @@ fi
 
 # Docker Engine
 if ! command -v docker &>/dev/null; then
+  if [[ "$PLATFORM" == "macos" ]]; then
+    fail "Docker not found. On macOS, install Docker Desktop (https://www.docker.com/products/docker-desktop/) or colima (\`brew install colima docker docker-compose\`), start it, then re-run this script."
+  fi
   info "Installing Docker Engine..."
   curl -fsSL https://get.docker.com | sudo sh
   # Add current user to docker group so we don't need sudo for docker commands
@@ -78,12 +101,17 @@ if ! command -v docker &>/dev/null; then
 fi
 DOCKER_SUDO="${DOCKER_SUDO:-}"
 
-# Ensure Docker starts at boot (covers both fresh install and pre-existing)
-sudo systemctl enable docker 2>/dev/null || true
+# Ensure Docker starts at boot (Linux only — on macOS this is handled by Docker Desktop's "Open at login" setting)
+if [[ "$PLATFORM" == "linux" ]]; then
+  sudo systemctl enable docker 2>/dev/null || true
+fi
 ok "Docker found: $(docker --version)"
 
 # Docker Compose (V2 plugin)
 if ! docker compose version &>/dev/null; then
+  if [[ "$PLATFORM" == "macos" ]]; then
+    fail "Docker Compose v2 not found. Docker Desktop ships with it; if you're using colima, install with \`brew install docker-compose\`."
+  fi
   info "Installing Docker Compose plugin..."
   sudo mkdir -p /usr/local/lib/docker/cli-plugins
   COMPOSE_VERSION=$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name"' | head -1 | cut -d'"' -f4)
@@ -96,6 +124,9 @@ ok "Docker Compose found: $(docker compose version --short)"
 
 # Check Docker daemon is running
 if ! ${DOCKER_SUDO} docker info &>/dev/null; then
+  if [[ "$PLATFORM" == "macos" ]]; then
+    fail "Docker daemon is not running. Start Docker Desktop (or \`colima start\`) and re-run this script."
+  fi
   info "Starting Docker daemon..."
   sudo systemctl start docker
   sleep 2
@@ -151,12 +182,31 @@ echo ""
 read -rp "$(echo -e "${CYAN}▸${NC}") Default GitHub webhook secret (leave blank to skip): " GITHUB_WEBHOOK_SECRET
 GITHUB_WEBHOOK_SECRET="${GITHUB_WEBHOOK_SECRET:-}"
 
+# Deploy base dir — Linux uses /var/beachhead/deployments (system-wide, needs sudo);
+# macOS uses ~/beachhead/deployments (user-writable, under /Users which Docker Desktop
+# shares with the VM by default).
+if [[ "$PLATFORM" == "macos" ]]; then
+  DEPLOY_BASE_DIR_DEFAULT="${HOME}/beachhead/deployments"
+else
+  DEPLOY_BASE_DIR_DEFAULT="/var/beachhead/deployments"
+fi
+
+# Reuse existing DEPLOY_BASE_DIR if .env already exists — changing it would orphan
+# previously-deployed apps' working dirs.
+if [[ -f .env ]] && grep -q "^DEPLOY_BASE_DIR=" .env; then
+  DEPLOY_BASE_DIR=$(grep "^DEPLOY_BASE_DIR=" .env | cut -d'=' -f2-)
+  info "Reusing existing deploy base dir from .env: ${DEPLOY_BASE_DIR}"
+else
+  DEPLOY_BASE_DIR="$DEPLOY_BASE_DIR_DEFAULT"
+fi
+
 echo ""
 echo -e "${BOLD}Summary${NC}"
 echo "  Root domain: ${ROOT_DOMAIN}"
 echo "  Beachhead:   https://${BEACHHEAD_DOMAIN}"
 echo "  Email:       ${LETSENCRYPT_EMAIL}"
-echo "  Webhook:   ${GITHUB_WEBHOOK_SECRET:-<not set>}"
+echo "  Webhook:     ${GITHUB_WEBHOOK_SECRET:-<not set>}"
+echo "  Deploy dir:  ${DEPLOY_BASE_DIR}"
 echo ""
 read -rp "$(echo -e "${CYAN}▸${NC}") Proceed with installation? [Y/n] " CONFIRM
 CONFIRM="${CONFIRM:-Y}"
@@ -194,7 +244,7 @@ AUTH_ISSUER=
 GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
 
 # Deployment
-DEPLOY_BASE_DIR=/var/beachhead/deployments
+DEPLOY_BASE_DIR=${DEPLOY_BASE_DIR}
 DOCKER_NETWORK=beachhead-net
 
 # Health Check
@@ -224,15 +274,19 @@ else
   warn "Node.js not found locally — dashboard will be built inside Docker"
 fi
 
-# ── Install systemd startup service ─────────────────────────────────────────
+# ── Install boot/startup hook ───────────────────────────────────────────────
+# Linux: systemd units. macOS: rely on Docker Desktop's "Open at login" + the
+# containers' `restart: unless-stopped` policy (containers come back when Docker
+# starts). No LaunchAgent needed.
 
-info "Installing beachhead systemd startup services..."
-BEACHHEAD_DIR="$(pwd)"
+if [[ "$PLATFORM" == "linux" ]]; then
+  info "Installing beachhead systemd startup services..."
+  BEACHHEAD_DIR="$(pwd)"
 
-# This service runs immediately after docker.service to ensure beachhead-net
-# exists before app containers try to connect to it.
-# App containers are brought up by Beachhead's own startup cleanup on boot.
-sudo tee /etc/systemd/system/docker-beachhead-net.service > /dev/null <<'UNIT'
+  # This service runs immediately after docker.service to ensure beachhead-net
+  # exists before app containers try to connect to it.
+  # App containers are brought up by Beachhead's own startup cleanup on boot.
+  sudo tee /etc/systemd/system/docker-beachhead-net.service > /dev/null <<'UNIT'
 [Unit]
 Description=Ensure beachhead-net Docker network exists
 Requires=docker.service
@@ -247,7 +301,7 @@ ExecStart=/bin/sh -c '/usr/bin/docker network create beachhead-net 2>/dev/null; 
 WantedBy=multi-user.target
 UNIT
 
-sudo tee /etc/systemd/system/beachhead.service > /dev/null <<EOF
+  sudo tee /etc/systemd/system/beachhead.service > /dev/null <<EOF
 [Unit]
 Description=Beachhead deployment platform
 Requires=docker.service docker-beachhead-net.service
@@ -266,15 +320,22 @@ TimeoutStartSec=120
 WantedBy=multi-user.target
 EOF
 
-sudo systemctl daemon-reload
-sudo systemctl enable docker-beachhead-net.service
-sudo systemctl enable beachhead.service
-ok "Startup services installed (docker-beachhead-net.service, beachhead.service)"
+  sudo systemctl daemon-reload
+  sudo systemctl enable docker-beachhead-net.service
+  sudo systemctl enable beachhead.service
+  ok "Startup services installed (docker-beachhead-net.service, beachhead.service)"
+else
+  info "Skipping systemd setup on macOS — enable 'Open Docker Desktop at login' in Docker Desktop settings so containers come up on boot via restart: unless-stopped."
+fi
 
 # ── Start services ───────────────────────────
 
-info "Ensuring deployment directory exists..."
-sudo mkdir -p /var/beachhead/deployments
+info "Ensuring deployment directory exists at ${DEPLOY_BASE_DIR}..."
+if [[ "$PLATFORM" == "macos" ]]; then
+  mkdir -p "${DEPLOY_BASE_DIR}"
+else
+  sudo mkdir -p "${DEPLOY_BASE_DIR}"
+fi
 
 info "Building and starting Beachhead..."
 ${DOCKER_SUDO} docker compose up -d --build 2>&1 | tail -10

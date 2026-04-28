@@ -25,6 +25,10 @@ const Settings = {
     return (await this.get('build_mode')) || 'local';
   },
 
+  async getNetworkMode() {
+    return (await this.get('network_mode')) || 'direct';
+  },
+
   async getRegistryConfig() {
     const type = (await this.get('registry_type')) || 'generic';
 

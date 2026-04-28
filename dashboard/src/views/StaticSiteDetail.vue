@@ -15,6 +15,8 @@
       </div>
     </div>
 
+    <HomeNetworkBanner context="static site" :domain="site.domain" />
+
     <!-- Details -->
     <div class="card">
       <h3 style="margin-bottom:0.75rem;">Details</h3>
@@ -56,8 +58,10 @@
 
 <script>
 import api from '../api.js';
+import HomeNetworkBanner from '../components/HomeNetworkBanner.vue';
 
 export default {
+  components: { HomeNetworkBanner },
   data: () => ({
     site: null,
     loading: true,

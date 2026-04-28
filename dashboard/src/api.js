@@ -75,6 +75,7 @@ export default {
   removeContainer: (id) => request(`/system/containers/${id}/remove`, { method: 'POST', body: {} }),
   systemPrune: (keep) => request('/system/prune', { method: 'POST', body: { keep } }),
   pruneApp: (appId, keep) => request(`/system/apps/${appId}/prune`, { method: 'POST', body: { keep } }),
+  getNetworkInfo: () => request('/system/network-info'),
 
   async uploadStaticSite(id, file) {
     const formData = new FormData();

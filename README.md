@@ -26,7 +26,7 @@ All deployed containers join `beachhead-net`, enabling the nginx proxy to route 
 
 ### 1. Install
 
-SSH into your server and run:
+SSH into your server (or open a terminal on your Mac) and run:
 
 ```bash
 git clone https://github.com/your-org/beachhead.git
@@ -34,16 +34,27 @@ cd beachhead
 ./install.sh
 ```
 
-The installer will:
-- Check for Docker, Docker Compose, and Git
+The installer auto-detects Linux vs macOS and adjusts accordingly:
+
+| | Linux (Ubuntu/Debian/RHEL) | macOS |
+|---|---|---|
+| Docker | Auto-installs via `get.docker.com` if missing | Must pre-install Docker Desktop or colima — installer fails fast otherwise |
+| Boot startup | systemd units (`beachhead.service`, `docker-beachhead-net.service`) | Docker Desktop "Open at login" + `restart: unless-stopped` (no LaunchAgent) |
+| Deploy dir | `/var/beachhead/deployments` (created with sudo) | `~/beachhead/deployments` (no sudo) |
+| Package mgr | apt / yum / dnf | brew (for any missing CLI tool) |
+
+In both cases the installer will:
+- Verify Docker, Docker Compose, and Git
 - Prompt for your **domain name** (e.g. `deploy.example.com`) and **email** for SSL
 - Generate a secure database password
-- Write `.env` with all configuration
+- Write `.env` with all configuration (including the platform-appropriate `DEPLOY_BASE_DIR`)
 - Create the `beachhead-net` Docker network
 - Build and start all services
 - Verify the API is healthy
 
 > **Prerequisite:** Point your domain's DNS to this server's IP before or shortly after running the installer. SSL certificates are provisioned automatically once DNS resolves.
+
+> **macOS note:** Docker Desktop must be running before you start the installer. Ports 80 and 443 must be free (Docker Desktop binds them on the host). `~/beachhead/deployments` is bind-mounted at the same path inside the container, so the host docker daemon and the in-container code agree on absolute paths.
 
 ### 2. Manual setup (alternative)
 

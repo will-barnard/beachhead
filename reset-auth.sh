@@ -22,9 +22,11 @@ if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
   exit 0
 fi
 
-# Delete all users via the postgres container
-docker compose exec -T postgres psql -U beachhead -d beachhead -c "DELETE FROM users;" 2>/dev/null || \
-  docker exec beachhead-postgres-1 psql -U beachhead -d beachhead -c "DELETE FROM users;"
+# Delete all users via the postgres container.
+# The compose service is named `beachhead-db` and the container_name is also
+# `beachhead-db`, so both forms below target the same container.
+docker compose exec -T beachhead-db psql -U beachhead -d beachhead -c "DELETE FROM users;" 2>/dev/null || \
+  docker exec beachhead-db psql -U beachhead -d beachhead -c "DELETE FROM users;"
 
 docker compose restart beachhead
 

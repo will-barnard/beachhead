@@ -144,6 +144,83 @@
         {{ savingBuild ? 'Saving...' : 'Save Build Settings' }}
       </button>
     </div>
+
+    <!-- Network -->
+    <div class="card" style="margin-top: 2rem;">
+      <h3 style="margin-bottom: 1rem;">Network</h3>
+
+      <div v-if="netError" style="color: var(--danger); margin-bottom: 0.75rem;">{{ netError }}</div>
+      <div v-if="netSuccess" style="color: var(--success); margin-bottom: 0.75rem;">{{ netSuccess }}</div>
+
+      <div style="margin-bottom: 1rem;">
+        <label>Network Mode</label>
+        <div style="display: flex; gap: 1rem; margin-top: 0.25rem;">
+          <label style="display: flex; align-items: center; gap: 0.35rem; cursor: pointer;">
+            <input type="radio" v-model="networkSettings.network_mode" value="direct" />
+            Direct (cloud VM, public IP)
+          </label>
+          <label style="display: flex; align-items: center; gap: 0.35rem; cursor: pointer;">
+            <input type="radio" v-model="networkSettings.network_mode" value="home_network" />
+            Home network (behind a router / NAT)
+          </label>
+        </div>
+        <p style="color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0;">
+          Switch this on if Beachhead is running on a machine behind a home router. The dashboard will then
+          surface port-forwarding and DNS reminders on app pages.
+        </p>
+      </div>
+
+      <div v-if="networkSettings.network_mode === 'home_network' && networkInfo" style="margin-top: 1rem; padding: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 4px;">
+        <h4 style="margin: 0 0 0.75rem;">Port forwarding</h4>
+        <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">
+          Forward these ports on your router to <strong>this machine</strong>. All apps share these two ports —
+          <code>nginx-proxy</code> routes by <code>Host</code> header, so no per-app forwarding is required.
+        </p>
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 1rem;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--border); text-align: left;">
+              <th style="padding: 0.4rem;">Port</th>
+              <th style="padding: 0.4rem;">Protocol</th>
+              <th style="padding: 0.4rem;">Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in networkInfo.requiredPorts" :key="p.port" style="border-bottom: 1px solid var(--border);">
+              <td style="padding: 0.4rem;"><strong>{{ p.port }}</strong></td>
+              <td style="padding: 0.4rem;">{{ p.protocol.toUpperCase() }}</td>
+              <td style="padding: 0.4rem; color: var(--muted);">{{ p.purpose }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h4 style="margin: 1rem 0 0.5rem;">This machine's LAN address</h4>
+        <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.5rem;">
+          Use this as the forwarding target on your router. (Detected from inside the Beachhead container — pick
+          whichever matches your LAN range, typically <code>192.168.x.x</code> or <code>10.x.x.x</code>.)
+        </p>
+        <ul v-if="networkInfo.lanCandidates.length" style="margin: 0; padding-left: 1.25rem;">
+          <li v-for="c in networkInfo.lanCandidates" :key="c.iface + c.address">
+            <code>{{ c.address }}</code> <span style="color: var(--muted);">({{ c.iface }})</span>
+          </li>
+        </ul>
+        <p v-else style="color: var(--muted); font-size: 0.9rem; margin: 0.25rem 0 0;">
+          No non-loopback IPv4 addresses visible from inside the container. Run <code>ipconfig getifaddr en0</code>
+          (Mac) or <code>ip -4 addr</code> (Linux) on the host to find your LAN IP.
+        </p>
+
+        <h4 style="margin: 1rem 0 0.5rem;">DNS</h4>
+        <p style="color: var(--muted); font-size: 0.9rem; margin: 0;">
+          Each app's domain (and the dashboard domain) needs an <strong>A record pointing to your home's WAN IP</strong>
+          — the public IP your router presents to the internet. Find it with
+          <a href="https://ipv4.icanhazip.com" target="_blank" rel="noopener">icanhazip.com</a>
+          or your router's status page. If your ISP gives you a dynamic IP, consider a dynamic-DNS service.
+        </p>
+      </div>
+
+      <button class="btn" @click="saveNetworkSettings" :disabled="savingNetwork" style="margin-top: 1.5rem;">
+        {{ savingNetwork ? 'Saving...' : 'Save Network Settings' }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -175,10 +252,18 @@ export default {
     buildError: null,
     buildSuccess: null,
     savingBuild: false,
+    networkSettings: {
+      network_mode: 'direct',
+    },
+    networkInfo: null,
+    netError: null,
+    netSuccess: null,
+    savingNetwork: false,
   }),
   async mounted() {
     await this.loadUsers();
     await this.loadBuildSettings();
+    await this.loadNetworkSettings();
     try {
       const status = await api.getBootstrapStatus();
       if (status.user) this.currentUserId = status.user.id;
@@ -279,6 +364,32 @@ export default {
         this.buildError = e.message;
       } finally {
         this.savingBuild = false;
+      }
+    },
+    async loadNetworkSettings() {
+      try {
+        const settings = await api.getSettings();
+        this.networkSettings.network_mode = settings.network_mode || 'direct';
+      } catch {
+        // settings may not exist yet
+      }
+      try {
+        this.networkInfo = await api.getNetworkInfo();
+      } catch {
+        // non-fatal — the panel just won't render the LAN/ports table
+      }
+    },
+    async saveNetworkSettings() {
+      this.netError = null;
+      this.netSuccess = null;
+      this.savingNetwork = true;
+      try {
+        await api.updateSettings({ network_mode: this.networkSettings.network_mode });
+        this.netSuccess = 'Network settings saved';
+      } catch (e) {
+        this.netError = e.message;
+      } finally {
+        this.savingNetwork = false;
       }
     },
   },

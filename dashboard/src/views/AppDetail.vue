@@ -12,6 +12,8 @@
       </div>
     </div>
 
+    <HomeNetworkBanner context="app" :domain="app.domain" />
+
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
         <h3>Details</h3>
@@ -232,8 +234,10 @@
 
 <script>
 import api from '../api.js';
+import HomeNetworkBanner from '../components/HomeNetworkBanner.vue';
 
 export default {
+  components: { HomeNetworkBanner },
   data: () => ({
     app: null,
     deployments: [],

@@ -1,6 +1,7 @@
 <template>
   <div>
     <h2 style="margin-bottom:1.5rem;">New Static Site</h2>
+    <HomeNetworkBanner context="static site" :domain="form.domain" />
     <div v-if="error" style="color:var(--danger); margin-bottom:1rem;">{{ error }}</div>
     <form @submit.prevent="submit" class="card">
       <div class="form-group">
@@ -20,8 +21,10 @@
 
 <script>
 import api from '../api.js';
+import HomeNetworkBanner from '../components/HomeNetworkBanner.vue';
 
 export default {
+  components: { HomeNetworkBanner },
   data: () => ({
     form: { name: '', domain: '' },
     error: null,
