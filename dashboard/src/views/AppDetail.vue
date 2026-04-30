@@ -3,12 +3,51 @@
   <div v-else-if="error" style="color: var(--danger);">{{ error }}</div>
   <div v-else>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem;">
-      <h2>{{ app.name }}</h2>
+      <h2>
+        {{ app.name }}
+        <span v-if="app.paused" class="badge badge-warning" style="margin-left:0.5rem; font-size:0.7rem; vertical-align:middle;">Paused</span>
+      </h2>
       <div>
-        <button class="btn" @click="triggerDeploy" style="margin-right:0.5rem;">Deploy Now</button>
-        <button class="btn btn-warning" @click="wipeAndRedeploy" style="margin-right:0.5rem;">Wipe &amp; Redeploy</button>
+        <button
+          class="btn"
+          @click="triggerDeploy"
+          :disabled="app.paused"
+          :title="app.paused ? 'Unpause this app to deploy' : ''"
+          style="margin-right:0.5rem;"
+        >Deploy Now</button>
+        <button
+          class="btn btn-warning"
+          @click="wipeAndRedeploy"
+          :disabled="app.paused"
+          :title="app.paused ? 'Unpause this app to redeploy' : ''"
+          style="margin-right:0.5rem;"
+        >Wipe &amp; Redeploy</button>
         <button class="btn btn-warning" @click="cancelDeployment" style="margin-right:0.5rem;">Cancel Stuck Deploy</button>
         <button class="btn btn-danger" @click="deleteApp">Delete</button>
+      </div>
+    </div>
+
+    <!-- Paused banner -->
+    <div
+      v-if="app.paused"
+      class="card"
+      style="margin-bottom:1rem; border-left:4px solid var(--warning, #d97706);"
+    >
+      <div style="display:flex; gap:0.75rem; align-items:flex-start;">
+        <div style="font-size:1.25rem; line-height:1;">⏸</div>
+        <div style="flex:1;">
+          <strong>This app is paused.</strong>
+          <p style="margin:0.35rem 0 0; color:var(--muted); font-size:0.9rem;">
+            Containers are stopped. Webhooks and manual deploys are blocked while paused.
+            <span v-if="app.paused_redirect_url">
+              Traffic to <code>{{ app.domain }}</code> is being redirected to
+              <code>{{ app.paused_redirect_url }}</code> (302).
+            </span>
+            <span v-else>
+              Traffic to <code>{{ app.domain }}</code> sees a default maintenance page.
+            </span>
+          </p>
+        </div>
       </div>
     </div>
 
@@ -74,6 +113,115 @@
           <div style="display:flex; align-items:center; gap:0.5rem; padding-bottom:0.5rem;">
             <input type="checkbox" v-model="settingsForm.auto_deploy" id="auto_deploy_edit" style="width:auto; margin:0;" />
             <label for="auto_deploy_edit" style="margin:0; color:var(--text);">Auto-deploy on push</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pause / Unpause -->
+    <div class="card">
+      <h3 style="margin-bottom:0.75rem;">
+        Pause
+        <span v-if="app.paused" class="badge badge-warning" style="margin-left:0.5rem; font-size:0.65rem;">Active</span>
+      </h3>
+      <p style="color:var(--muted); font-size:0.85rem; margin-bottom:0.75rem;">
+        Pausing stops the app's containers and replaces them with a small placeholder
+        that returns either a custom 302 redirect or a default maintenance page.
+        The TLS certificate keeps renewing while paused. Webhooks and manual deploys
+        are blocked until the app is unpaused.
+      </p>
+
+      <div v-if="!app.paused">
+        <div class="form-group" style="margin-bottom:0.5rem;">
+          <label style="font-size:0.8rem; color:var(--muted);">
+            Redirect URL <span style="font-weight:normal;">(optional — if blank, visitors see a maintenance page)</span>
+          </label>
+          <input
+            v-model="pauseForm.redirect_url"
+            type="url"
+            placeholder="https://example.com/holding-page"
+            :disabled="pausing"
+          />
+        </div>
+        <button class="btn btn-warning" @click="pauseApp" :disabled="pausing">
+          {{ pausing ? 'Pausing…' : 'Pause App' }}
+        </button>
+      </div>
+
+      <div v-else>
+        <div style="font-size:0.875rem; margin-bottom:0.75rem;">
+          <strong>Status:</strong> Paused
+          <span v-if="app.paused_redirect_url">
+            — redirecting to <code>{{ app.paused_redirect_url }}</code>
+          </span>
+          <span v-else>
+            — serving default maintenance page
+          </span>
+        </div>
+        <p style="color:var(--muted); font-size:0.8rem; margin-bottom:0.75rem;">
+          Unpause restarts the existing containers (fast). If they've been pruned
+          or removed, a fresh deploy is queued automatically. Use
+          <em>Unpause &amp; Redeploy</em> to force a fresh clone+build.
+        </p>
+        <div style="display:flex; gap:0.5rem;">
+          <button class="btn" @click="unpauseApp(false)" :disabled="unpausing">
+            {{ unpausing && unpauseMode === 'start' ? 'Starting…' : 'Unpause' }}
+          </button>
+          <button class="btn btn-warning" @click="unpauseApp(true)" :disabled="unpausing">
+            {{ unpausing && unpauseMode === 'redeploy' ? 'Redeploying…' : 'Unpause &amp; Redeploy' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Staging URL -->
+    <div class="card">
+      <h3 style="margin-bottom:0.75rem;">
+        Staging URL
+        <span v-if="app.staging_subdomain && stagingRootDomain" class="badge badge-success" style="margin-left:0.5rem; font-size:0.65rem;">Active</span>
+      </h3>
+      <p style="color:var(--muted); font-size:0.85rem; margin-bottom:0.75rem;">
+        Expose this app at a temporary subdomain of the global staging root, alongside its primary domain.
+        Useful for previewing a site before its real domain is wired up.
+      </p>
+
+      <div v-if="!stagingRootDomain" style="padding:0.75rem; background:var(--surface); border:1px dashed var(--border); border-radius:4px; font-size:0.85rem; color:var(--muted);">
+        No <strong>staging_root_domain</strong> is configured. Set one in
+        <router-link to="/settings">Settings → Staging Domain</router-link> first
+        (and ensure <code>*.&lt;your-root&gt; → this server</code> wildcard DNS is in place).
+      </div>
+
+      <div v-else>
+        <div v-if="app.staging_subdomain" style="margin-bottom:0.75rem; font-size:0.875rem;">
+          <strong>Current:</strong>
+          <a :href="`https://${app.staging_subdomain}.${stagingRootDomain}`" target="_blank" rel="noopener" style="margin-left:0.35rem;">
+            https://{{ app.staging_subdomain }}.{{ stagingRootDomain }}
+          </a>
+        </div>
+
+        <div style="display:flex; gap:0.5rem; align-items:flex-end; flex-wrap:wrap;">
+          <div style="flex:1; min-width:220px;">
+            <label style="font-size:0.8rem; color:var(--muted);">Subdomain</label>
+            <div style="display:flex; align-items:center; gap:0.35rem;">
+              <input
+                v-model="stagingForm.subdomain"
+                placeholder="e.g. acme-preview"
+                :disabled="settingStaging"
+                style="flex:1;"
+              />
+              <span style="color:var(--muted); white-space:nowrap;">.{{ stagingRootDomain }}</span>
+            </div>
+            <p style="color:var(--muted); font-size:0.75rem; margin:0.35rem 0 0;">
+              1–63 lowercase letters, digits, hyphens. No leading/trailing hyphen.
+            </p>
+          </div>
+          <div style="display:flex; gap:0.5rem;">
+            <button class="btn" @click="saveStaging" :disabled="settingStaging || !stagingForm.subdomain">
+              {{ settingStaging && stagingMode === 'set' ? 'Setting…' : 'Set Staging URL' }}
+            </button>
+            <button v-if="app.staging_subdomain" class="btn btn-warning" @click="clearStaging" :disabled="settingStaging">
+              {{ settingStaging && stagingMode === 'clear' ? 'Clearing…' : 'Clear' }}
+            </button>
           </div>
         </div>
       </div>
@@ -262,6 +410,14 @@ export default {
     settingsForm: {},
     editingEnvId: null,
     editingEnvValue: '',
+    pauseForm: { redirect_url: '' },
+    pausing: false,
+    unpausing: false,
+    unpauseMode: null,
+    stagingRootDomain: '',
+    stagingForm: { subdomain: '' },
+    settingStaging: false,
+    stagingMode: null,
   }),
   async created() {
     await this.load();
@@ -282,6 +438,14 @@ export default {
         this.envVars = envVars;
         this.envFiles = envFiles;
         this.endpoints = endpoints;
+        this.stagingForm.subdomain = app.staging_subdomain || '';
+        try {
+          const settings = await api.getSettings();
+          this.stagingRootDomain = settings.staging_root_domain || '';
+        } catch {
+          // non-admin or settings unavailable — staging card just shows "not configured"
+          this.stagingRootDomain = '';
+        }
       } catch (e) {
         this.error = e.message;
       } finally {
@@ -498,6 +662,77 @@ export default {
         alert('Prune failed: ' + e.message);
       } finally {
         this.pruning = false;
+      }
+    },
+    async pauseApp() {
+      const redirect = (this.pauseForm.redirect_url || '').trim();
+      const msg = redirect
+        ? `Pause ${this.app.name}?\n\nContainers will be stopped and ${this.app.domain} will redirect to:\n${redirect}`
+        : `Pause ${this.app.name}?\n\nContainers will be stopped and ${this.app.domain} will show a default maintenance page until you unpause.`;
+      if (!confirm(msg)) return;
+      this.pausing = true;
+      try {
+        const body = redirect ? { redirect_url: redirect } : {};
+        await api.pauseApp(this.app.id, body);
+        this.pauseForm.redirect_url = '';
+        await this.load();
+      } catch (e) {
+        alert('Pause failed: ' + e.message);
+      } finally {
+        this.pausing = false;
+      }
+    },
+    async unpauseApp(forceRedeploy = false) {
+      const msg = forceRedeploy
+        ? `Unpause ${this.app.name} and redeploy?\n\nThe placeholder is removed and a fresh clone+build is queued.`
+        : `Unpause ${this.app.name}?\n\nPreviously stopped containers will be started in place. If they're missing, a fresh deployment will be queued automatically.`;
+      if (!confirm(msg)) return;
+      this.unpausing = true;
+      this.unpauseMode = forceRedeploy ? 'redeploy' : 'start';
+      try {
+        const result = await api.unpauseApp(this.app.id, forceRedeploy ? { force_redeploy: true } : {});
+        if (result?.mode === 'redeploy' && !forceRedeploy) {
+          alert('Previous containers were unavailable — a fresh deployment was queued.');
+        }
+        await this.load();
+      } catch (e) {
+        alert('Unpause failed: ' + e.message);
+      } finally {
+        this.unpausing = false;
+        this.unpauseMode = null;
+      }
+    },
+    async saveStaging() {
+      const sub = (this.stagingForm.subdomain || '').trim().toLowerCase();
+      if (!sub) return;
+      this.settingStaging = true;
+      this.stagingMode = 'set';
+      try {
+        const result = await api.setStaging(this.app.id, { staging_subdomain: sub });
+        await this.load();
+        if (result?.staging_url) {
+          // surface the new URL — the badge + link in the card update on reload
+        }
+      } catch (e) {
+        alert('Failed to set staging URL: ' + e.message);
+      } finally {
+        this.settingStaging = false;
+        this.stagingMode = null;
+      }
+    },
+    async clearStaging() {
+      if (!confirm(`Clear staging URL for ${this.app.name}?`)) return;
+      this.settingStaging = true;
+      this.stagingMode = 'clear';
+      try {
+        await api.setStaging(this.app.id, { staging_subdomain: null });
+        this.stagingForm.subdomain = '';
+        await this.load();
+      } catch (e) {
+        alert('Failed to clear staging URL: ' + e.message);
+      } finally {
+        this.settingStaging = false;
+        this.stagingMode = null;
       }
     },
     async rollback(dep) {

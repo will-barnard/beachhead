@@ -172,6 +172,14 @@ async function processDeployment(deployment) {
       wwwRedirect: ep.www_redirect || false,
     }));
 
+    // Compose the staging host (e.g. "acme.dev.example.com") if both the
+    // global staging root and the app's staging subdomain are set.
+    let stagingHost = null;
+    if (app.staging_subdomain) {
+      const stagingRoot = await Settings.getStagingRootDomain();
+      if (stagingRoot) stagingHost = `${app.staging_subdomain}.${stagingRoot}`;
+    }
+
     const overrideContent = generateOverride({
       appSlug: app.name,
       deployId: deployment.id,
@@ -183,6 +191,7 @@ async function processDeployment(deployment) {
       wwwRedirect: app.www_redirect || false,
       statefulNetwork,
       additionalEndpoints,
+      stagingHost,
     });
     writeOverrideFile(deployDir, overrideContent);
 

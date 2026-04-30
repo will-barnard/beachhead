@@ -185,6 +185,27 @@ const MIGRATIONS = [
       INSERT INTO settings (key, value) VALUES ('network_mode', 'direct') ON CONFLICT DO NOTHING;
     `,
   },
+  {
+    name: '017_add_paused_to_apps',
+    sql: `
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS paused BOOLEAN DEFAULT false;
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS paused_redirect_url TEXT;
+    `,
+  },
+  {
+    name: '018_add_staging_subdomain_to_apps',
+    sql: `
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS staging_subdomain TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_apps_staging_subdomain
+        ON apps(staging_subdomain) WHERE staging_subdomain IS NOT NULL;
+    `,
+  },
+  {
+    name: '019_add_staging_root_domain_setting',
+    sql: `
+      INSERT INTO settings (key, value) VALUES ('staging_root_domain', '') ON CONFLICT DO NOTHING;
+    `,
+  },
 ];
 
 async function migrate() {

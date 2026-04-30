@@ -244,6 +244,31 @@ async function dockerComposeRecreate(cwd, overrideFile, serviceName) {
 }
 
 /**
+ * Docker compose stop — gracefully stops containers without removing them.
+ * Used for pause flow so unpause can `compose start` them back up without
+ * a full clone+build cycle. Containers retain their network attachments
+ * (which is fine — nginx-proxy's docker-gen only renders running containers).
+ */
+async function dockerComposeStop(cwd, overrideFile) {
+  const args = ['compose', '-f', 'docker-compose.yml'];
+  if (overrideFile) args.push('-f', overrideFile);
+  args.push('stop');
+  await exec('docker', args, { cwd, timeout: 60000 });
+}
+
+/**
+ * Docker compose start — starts previously stopped containers in place.
+ * Used for unpause. No rebuild, no recreate — just bring existing containers
+ * back to running state.
+ */
+async function dockerComposeStart(cwd, overrideFile) {
+  const args = ['compose', '-f', 'docker-compose.yml'];
+  if (overrideFile) args.push('-f', overrideFile);
+  args.push('start');
+  await exec('docker', args, { cwd, timeout: 60000 });
+}
+
+/**
  * Docker compose up without building — restarts existing images.
  * Used for rollbacks where the images are already in the local Docker cache.
  * Mirrors dockerComposeUp but omits --build so no rebuild is attempted.
@@ -268,6 +293,8 @@ module.exports = {
   dockerComposeUpStateful,
   stopContainersUsingVolume,
   stopComposeProject,
+  dockerComposeStop,
+  dockerComposeStart,
   dockerComposeDown,
   dockerComposeLogs,
   dockerComposeRecreate,

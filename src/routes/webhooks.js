@@ -88,6 +88,12 @@ router.post('/github', expressRaw({ type: 'application/json', limit: '10mb' }), 
         logger.warn(`Webhook: no secret configured for ${app.name} — skipping signature check`);
       }
 
+      // Skip paused apps — webhooks shouldn't queue deploys while pause is in effect
+      if (app.paused) {
+        logger.info(`Webhook: app ${app.name} is paused, skipping`);
+        continue;
+      }
+
       // Check auto_deploy
       if (!app.auto_deploy) {
         logger.info(`Webhook: auto-deploy disabled for ${app.name}, skipping`);

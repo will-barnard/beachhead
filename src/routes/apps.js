@@ -5,9 +5,11 @@ const Apps = require('../models/apps');
 const AppEndpoints = require('../models/appEndpoints');
 const Deployments = require('../models/deployments');
 const EnvVars = require('../models/envVars');
+const Settings = require('../models/settings');
 const StaticSites = require('../models/staticSites');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
-const { dockerComposeDown, dockerComposeRecreate, dockerComposeUpNoBuild, stopComposeProject, ensureNetwork } = require('../services/docker');
+const { dockerComposeDown, dockerComposeRecreate, dockerComposeUpNoBuild, dockerComposeStop, dockerComposeStart, stopComposeProject, ensureNetwork } = require('../services/docker');
+const { startPausePlaceholder, stopPausePlaceholder } = require('../services/pause');
 const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames } = require('../services/composeWrapper');
 const { checkHealth } = require('../services/healthCheck');
 const config = require('../config');
@@ -168,6 +170,9 @@ router.delete('/:id', async (req, res) => {
       }
     }
 
+    // Also tear down a pause placeholder, if present
+    try { await stopPausePlaceholder(app.id); } catch {}
+
     await Apps.delete(app.id);
     logger.info(`App deleted: ${app.name}`);
     res.json({ message: 'App deleted', app });
@@ -182,6 +187,7 @@ router.post('/:id/deploy', async (req, res) => {
   try {
     const app = await Apps.findById(req.params.id);
     if (!app) return res.status(404).json({ error: 'App not found' });
+    if (app.paused) return res.status(409).json({ error: 'App is paused — unpause it before deploying' });
 
     const deployment = await Deployments.create({
       app_id: app.id,
@@ -201,6 +207,7 @@ router.post('/:id/wipe-and-redeploy', async (req, res) => {
   try {
     const app = await Apps.findById(req.params.id);
     if (!app) return res.status(404).json({ error: 'App not found' });
+    if (app.paused) return res.status(409).json({ error: 'App is paused — unpause it before redeploying' });
 
     logger.info(`Wipe & redeploy requested for ${app.name} (id=${app.id})`);
 
@@ -299,6 +306,7 @@ router.post('/:id/deployments/:deployId/rollback', async (req, res) => {
   try {
     const app = await Apps.findById(req.params.id);
     if (!app) return res.status(404).json({ error: 'App not found' });
+    if (app.paused) return res.status(409).json({ error: 'App is paused — unpause it before rolling back' });
 
     const targetDep = await Deployments.findById(req.params.deployId);
     if (!targetDep || targetDep.app_id !== app.id) {
@@ -389,6 +397,12 @@ async function regenerateOverride(app) {
     wwwRedirect: ep.www_redirect || false,
   }));
 
+  let stagingHost = null;
+  if (app.staging_subdomain) {
+    const stagingRoot = await Settings.getStagingRootDomain();
+    if (stagingRoot) stagingHost = `${app.staging_subdomain}.${stagingRoot}`;
+  }
+
   const overrideContent = generateOverride({
     appSlug: app.name,
     deployId: dep.id,
@@ -399,6 +413,7 @@ async function regenerateOverride(app) {
     namedVolumes,
     wwwRedirect: app.www_redirect || false,
     additionalEndpoints,
+    stagingHost,
   });
   writeOverrideFile(deployDir, overrideContent);
 
@@ -437,6 +452,222 @@ router.post('/:id/www', async (req, res) => {
     res.json({ message: `WWW enabled — cert request and redirect configured for www.${app.domain}` });
   } catch (err) {
     logger.error('Failed to enable www redirect', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Staging URL ──
+
+const SAFE_SUBDOMAIN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/**
+ * Set or clear an app's staging subdomain.
+ * Body: { staging_subdomain: string | null }
+ *
+ * The full staging URL is `${staging_subdomain}.${staging_root_domain}` —
+ * the root is a global setting. When set, the app's public service
+ * advertises both its production domain and the staging URL via
+ * VIRTUAL_HOST/LETSENCRYPT_HOST, so nginx-proxy serves both and
+ * acme-companion issues a cert for both. We regenerate the compose
+ * override and recreate the public service container in place — no
+ * full redeploy needed.
+ */
+router.put('/:id/staging', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+
+    let sub = req.body?.staging_subdomain;
+    if (sub === undefined) {
+      return res.status(400).json({ error: 'staging_subdomain is required (use null or "" to clear)' });
+    }
+    sub = sub === null ? null : String(sub).trim().toLowerCase();
+    if (sub === '') sub = null;
+
+    if (sub !== null) {
+      if (!SAFE_SUBDOMAIN.test(sub)) {
+        return res.status(400).json({ error: 'staging_subdomain must be 1–63 lowercase letters/digits/hyphens, no leading or trailing hyphen' });
+      }
+      // Ensure global staging root is configured
+      const stagingRoot = await Settings.getStagingRootDomain();
+      if (!stagingRoot) {
+        return res.status(400).json({ error: 'staging_root_domain is not configured — set it in Settings first' });
+      }
+      // Ensure no other app is using this subdomain
+      const existing = await Apps.findAll();
+      const collision = existing.find(a => a.id !== app.id && a.staging_subdomain === sub);
+      if (collision) {
+        return res.status(409).json({ error: `Staging subdomain "${sub}" is already used by app "${collision.name}"` });
+      }
+    }
+
+    const updated = await Apps.update(app.id, { staging_subdomain: sub });
+    Object.assign(app, updated);
+
+    // If the app is paused, just persist — placeholder will pick up the new
+    // hosts on unpause. Otherwise, regenerate override and recreate the
+    // public service container so nginx-proxy and acme-companion see the change.
+    if (!app.paused) {
+      const result = await regenerateOverride(app);
+      if (result) {
+        try {
+          await dockerComposeRecreate(result.deployDir, 'beachhead.override.yml', result.publicService);
+        } catch (err) {
+          logger.warn(`Staging: could not live-update container: ${err.message}`);
+        }
+      }
+    }
+
+    const stagingRoot = await Settings.getStagingRootDomain();
+    const fullUrl = sub && stagingRoot ? `${sub}.${stagingRoot}` : null;
+    logger.info(`Staging subdomain ${sub ? `set to "${sub}" → ${fullUrl}` : 'cleared'} for app ${app.name}`);
+    res.json({ message: sub ? `Staging URL set to ${fullUrl}` : 'Staging URL cleared', app, staging_url: fullUrl });
+  } catch (err) {
+    logger.error('Failed to update staging subdomain', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Pause / Unpause ──
+
+/**
+ * Pause an app: stop running deploy containers and start a placeholder
+ * (nginx:alpine) that either serves a 302 redirect to a custom URL or a
+ * default maintenance page. Webhooks and manual deploys are blocked while
+ * paused. The Let's Encrypt cert keeps renewing because the placeholder
+ * advertises the same VIRTUAL_HOST/LETSENCRYPT_HOST.
+ */
+router.post('/:id/pause', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+    if (app.paused) return res.status(400).json({ error: 'App is already paused' });
+
+    let redirectUrl = null;
+    if (req.body && req.body.redirect_url) {
+      const url = String(req.body.redirect_url).trim();
+      if (!/^https?:\/\/[^\s]+$/i.test(url)) {
+        return res.status(400).json({ error: 'redirect_url must be an http(s) URL' });
+      }
+      let parsed;
+      try {
+        parsed = new URL(url);
+      } catch {
+        return res.status(400).json({ error: 'redirect_url is not a valid URL' });
+      }
+      if (parsed.hostname === app.domain) {
+        return res.status(400).json({ error: 'redirect_url cannot point back to the app itself' });
+      }
+      redirectUrl = url;
+    }
+
+    // Persist state first so any concurrent webhooks see the paused flag
+    const updated = await Apps.update(app.id, { paused: true, paused_redirect_url: redirectUrl });
+    Object.assign(app, updated);
+
+    // Stop the active deployment's containers (best-effort).
+    // Use `compose stop` (not `down`) so containers survive in an exited state —
+    // unpause can `compose start` them back without a clone+build cycle.
+    let stopped = false;
+    if (app.active_deployment_id) {
+      const dep = await Deployments.findById(app.active_deployment_id);
+      if (dep) {
+        const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${dep.id}`);
+        try {
+          if (fs.existsSync(path.join(deployDir, 'beachhead.override.yml'))) {
+            await dockerComposeStop(deployDir, 'beachhead.override.yml');
+            stopped = true;
+          }
+        } catch (err) {
+          logger.warn(`Pause: dockerComposeStop failed for deploy #${dep.id}: ${err.message}`);
+        }
+      }
+    }
+    if (!stopped) {
+      // Fall back to label-based stop across all this app's deployments
+      // (docker stop also leaves containers in an exited state — start is still possible).
+      const deps = await Deployments.findByAppId(app.id, 100);
+      for (const dep of deps) {
+        try { await stopComposeProject(`deploy-${dep.id}`); } catch {}
+      }
+    }
+
+    // Start the placeholder so the domain still serves something with a valid cert
+    await startPausePlaceholder(app);
+
+    logger.info(`App paused: ${app.name} (${app.domain})${redirectUrl ? ` → ${redirectUrl}` : ''}`);
+    res.json({ message: 'App paused', app });
+  } catch (err) {
+    logger.error('Failed to pause app', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Unpause an app. Two paths:
+ *   1. Fast: `docker compose start` the previously stopped containers of the
+ *      active deployment. No clone, no build — instant.
+ *   2. Fallback: if the deploy directory or compose file is missing, or
+ *      `compose start` fails (containers were pruned, etc.), queue a fresh
+ *      deployment.
+ *
+ * Pass `?force_redeploy=1` (or body `{ force_redeploy: true }`) to skip the
+ * fast path and always do a fresh deploy.
+ */
+router.post('/:id/unpause', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+    if (!app.paused) return res.status(400).json({ error: 'App is not paused' });
+
+    const forceRedeploy = req.query.force_redeploy === '1' || req.body?.force_redeploy === true;
+
+    // Remove placeholder first so nginx-proxy doesn't see two containers
+    // claiming the same VIRTUAL_HOST when the real ones come back up.
+    await stopPausePlaceholder(app.id);
+
+    // Try the fast path: compose start the active deployment's containers.
+    let started = false;
+    if (!forceRedeploy && app.active_deployment_id) {
+      const dep = await Deployments.findById(app.active_deployment_id);
+      if (dep) {
+        const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${dep.id}`);
+        if (fs.existsSync(path.join(deployDir, 'beachhead.override.yml'))) {
+          try {
+            // Make sure the proxy network exists (defensive)
+            await ensureNetwork(config.deploy.dockerNetwork);
+            await dockerComposeStart(deployDir, 'beachhead.override.yml');
+            started = true;
+            logger.info(`App unpaused via compose start: ${app.name} (deploy #${dep.id})`);
+          } catch (err) {
+            logger.warn(`Unpause: compose start failed for deploy #${dep.id}: ${err.message} — falling back to fresh deploy`);
+          }
+        }
+      }
+    }
+
+    // Clear paused state regardless of which path we took
+    await Apps.update(app.id, { paused: false, paused_redirect_url: null });
+
+    if (started) {
+      return res.json({ message: 'App unpaused — containers restarted', mode: 'start' });
+    }
+
+    // Fallback: queue a fresh deployment
+    const deployment = await Deployments.create({
+      app_id: app.id,
+      commit_hash: null,
+    });
+    logger.info(`App unpaused via fresh deploy: ${app.name} (deploy #${deployment.id} queued)`);
+    res.json({
+      message: forceRedeploy
+        ? 'App unpaused — fresh deployment queued'
+        : 'App unpaused — previous containers unavailable, fresh deployment queued',
+      mode: 'redeploy',
+      deployment,
+    });
+  } catch (err) {
+    logger.error('Failed to unpause app', err);
     res.status(500).json({ error: err.message });
   }
 });

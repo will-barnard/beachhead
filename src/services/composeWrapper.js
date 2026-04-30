@@ -11,8 +11,11 @@ const logger = require('../logger');
  *
  * additionalEndpoints: optional array of { service, domain, port, wwwRedirect }
  * for apps with multiple public-facing services on different subdomains.
+ *
+ * stagingHost: optional fully-qualified hostname (e.g. "acme.dev.example.com")
+ * that the public service should also respond to. Gets its own LE cert.
  */
-function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides }) {
+function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides, stagingHost }) {
   if (!publicService || !domain) {
     throw new Error('publicService and domain are required for compose override');
   }
@@ -40,7 +43,14 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
     };
   }
 
-  const primaryHosts = wwwRedirect ? `${domain},www.${domain}` : domain;
+  // Build the comma-separated host list for the public service.
+  // Order: primary domain, optional www mirror, optional staging URL.
+  // De-dupe so we never double-list a hostname (defensive — shouldn't happen,
+  // but staging_subdomain validation may not catch every collision).
+  const hostList = [domain];
+  if (wwwRedirect) hostList.push(`www.${domain}`);
+  if (stagingHost && !hostList.includes(stagingHost)) hostList.push(stagingHost);
+  const primaryHosts = hostList.join(',');
 
   const override = {
     services: {

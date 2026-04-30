@@ -29,6 +29,10 @@ const Settings = {
     return (await this.get('network_mode')) || 'direct';
   },
 
+  async getStagingRootDomain() {
+    return (await this.get('staging_root_domain')) || '';
+  },
+
   async getRegistryConfig() {
     const type = (await this.get('registry_type')) || 'generic';
 

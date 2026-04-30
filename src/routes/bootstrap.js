@@ -241,7 +241,7 @@ router.post('/worker-token', requireAuth, requireSuperAdmin, async (req, res) =>
  * Update settings (admin only). Accepts { key: value } pairs.
  */
 router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
-  const allowed = ['build_mode', 'registry_type', 'registry_url', 'registry_user', 'registry_password', 'ghcr_owner', 'ghcr_token', 'git_ssh_key_path', 'network_mode'];
+  const allowed = ['build_mode', 'registry_type', 'registry_url', 'registry_user', 'registry_password', 'ghcr_owner', 'ghcr_token', 'git_ssh_key_path', 'network_mode', 'staging_root_domain'];
   const updates = req.body;
 
   if (!updates || typeof updates !== 'object') {
@@ -259,6 +259,15 @@ router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
       }
       if (key === 'network_mode' && !['direct', 'home_network'].includes(value)) {
         return res.status(400).json({ error: 'network_mode must be "direct" or "home_network"' });
+      }
+      if (key === 'staging_root_domain') {
+        const v = String(value || '').trim().toLowerCase();
+        // Allow empty (clear), or a valid hostname (no scheme, no path, no leading dot)
+        if (v && !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(v)) {
+          return res.status(400).json({ error: 'staging_root_domain must be a hostname like "dev.example.com" (no scheme, no path)' });
+        }
+        await Settings.set(key, v);
+        continue;
       }
       // Skip masked password — don't overwrite with placeholder
       if (key === 'registry_password' && value === '••••••••') continue;

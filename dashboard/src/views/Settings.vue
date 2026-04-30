@@ -221,6 +221,32 @@
         {{ savingNetwork ? 'Saving...' : 'Save Network Settings' }}
       </button>
     </div>
+
+    <!-- Staging -->
+    <div class="card" style="margin-top: 2rem;">
+      <h3 style="margin-bottom: 1rem;">Staging Domain</h3>
+
+      <div v-if="stagingError" style="color: var(--danger); margin-bottom: 0.75rem;">{{ stagingError }}</div>
+      <div v-if="stagingSuccess" style="color: var(--success); margin-bottom: 0.75rem;">{{ stagingSuccess }}</div>
+
+      <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">
+        Set a wildcard root domain you control (e.g. <code>dev.example.com</code>) so apps can be exposed at
+        <code>&lt;subdomain&gt;.dev.example.com</code> alongside their primary domain. Requires a wildcard
+        DNS record (<code>*.dev.example.com → this server</code>) so any subdomain resolves automatically.
+      </p>
+
+      <div style="max-width: 400px;">
+        <label>Staging Root Domain</label>
+        <input v-model="stagingSettings.staging_root_domain" placeholder="e.g. dev.example.com" style="width: 100%;" />
+        <p style="color: var(--muted); font-size: 0.85rem; margin: 0.4rem 0 0;">
+          Leave blank to disable staging URLs. No scheme, no path. Lowercase only.
+        </p>
+      </div>
+
+      <button class="btn" @click="saveStagingSettings" :disabled="savingStaging" style="margin-top: 1.5rem;">
+        {{ savingStaging ? 'Saving...' : 'Save Staging Settings' }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -259,11 +285,18 @@ export default {
     netError: null,
     netSuccess: null,
     savingNetwork: false,
+    stagingSettings: {
+      staging_root_domain: '',
+    },
+    stagingError: null,
+    stagingSuccess: null,
+    savingStaging: false,
   }),
   async mounted() {
     await this.loadUsers();
     await this.loadBuildSettings();
     await this.loadNetworkSettings();
+    await this.loadStagingSettings();
     try {
       const status = await api.getBootstrapStatus();
       if (status.user) this.currentUserId = status.user.id;
@@ -390,6 +423,27 @@ export default {
         this.netError = e.message;
       } finally {
         this.savingNetwork = false;
+      }
+    },
+    async loadStagingSettings() {
+      try {
+        const settings = await api.getSettings();
+        this.stagingSettings.staging_root_domain = settings.staging_root_domain || '';
+      } catch {
+        // settings may not exist yet
+      }
+    },
+    async saveStagingSettings() {
+      this.stagingError = null;
+      this.stagingSuccess = null;
+      this.savingStaging = true;
+      try {
+        await api.updateSettings({ staging_root_domain: this.stagingSettings.staging_root_domain.trim().toLowerCase() });
+        this.stagingSuccess = 'Staging settings saved';
+      } catch (e) {
+        this.stagingError = e.message;
+      } finally {
+        this.savingStaging = false;
       }
     },
   },

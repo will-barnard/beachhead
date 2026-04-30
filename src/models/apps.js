@@ -37,7 +37,7 @@ const Apps = {
   },
 
   async update(id, fields) {
-    const allowed = ['name', 'repo_url', 'domain', 'branch', 'public_service', 'public_port', 'auto_deploy', 'webhook_secret', 'www_redirect', 'active_deployment_id'];
+    const allowed = ['name', 'repo_url', 'domain', 'branch', 'public_service', 'public_port', 'auto_deploy', 'webhook_secret', 'www_redirect', 'active_deployment_id', 'paused', 'paused_redirect_url', 'staging_subdomain'];
     const sets = [];
     const values = [];
     let idx = 1;
