@@ -455,6 +455,17 @@ async function startupCleanup() {
   try {
     const apps = await Apps.findAll();
     for (const app of apps) {
+      // Don't bring paused apps back up. The pause placeholder has its own
+      // --restart unless-stopped policy and Docker will revive it on its own.
+      // Without this guard, a hard reset would re-launch a paused app's stateful
+      // services and any transient services whose compose project still has
+      // them registered — exactly the regression that lets a pre-existing boot
+      // loop keep consuming the VM after pause.
+      if (app.paused) {
+        logger.info(`[startup] Skipping paused app ${app.name}`);
+        continue;
+      }
+
       // Prefer the explicitly tracked active deployment; fall back to last successful
       const current = app.active_deployment_id
         ? await Deployments.findById(app.active_deployment_id)

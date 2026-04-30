@@ -8,7 +8,7 @@ const EnvVars = require('../models/envVars');
 const Settings = require('../models/settings');
 const StaticSites = require('../models/staticSites');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
-const { dockerComposeDown, dockerComposeRecreate, dockerComposeUpNoBuild, dockerComposeStop, dockerComposeStart, stopComposeProject, ensureNetwork } = require('../services/docker');
+const { dockerComposeDown, dockerComposeRecreate, dockerComposeUpNoBuild, dockerComposeStop, dockerComposeStart, dockerComposeUpStateful, stopComposeProject, ensureNetwork } = require('../services/docker');
 const { startPausePlaceholder, stopPausePlaceholder } = require('../services/pause');
 const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames } = require('../services/composeWrapper');
 const { checkHealth } = require('../services/healthCheck');
@@ -592,6 +592,28 @@ router.post('/:id/pause', async (req, res) => {
       }
     }
 
+    // Stop the stateful project too (postgres etc.). Without this, the
+    // stateful containers keep running through pause AND get re-launched by
+    // worker.startupCleanup on hard reset, which is exactly the scenario
+    // where a paused app's broken backend resumes its boot loop and starves
+    // the VM.
+    if (app.active_deployment_id) {
+      const dep = await Deployments.findById(app.active_deployment_id);
+      if (dep) {
+        const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${dep.id}`);
+        const bhConfig = readBeachheadConfig(deployDir);
+        const statefulServices = Array.isArray(bhConfig?.stateful_services) ? bhConfig.stateful_services : [];
+        if (statefulServices.length > 0) {
+          const slug = (app.name || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+          try {
+            await stopComposeProject(`${slug}-stateful`);
+          } catch (err) {
+            logger.warn(`Pause: failed to stop stateful project for ${app.name}: ${err.message}`);
+          }
+        }
+      }
+    }
+
     // Start the placeholder so the domain still serves something with a valid cert
     await startPausePlaceholder(app);
 
@@ -636,6 +658,22 @@ router.post('/:id/unpause', async (req, res) => {
           try {
             // Make sure the proxy network exists (defensive)
             await ensureNetwork(config.deploy.dockerNetwork);
+
+            // Bring the stateful project back up first if there is one,
+            // since pause stopped it and the transient services depend on
+            // it via depends_on: condition: service_healthy.
+            const bhConfig = readBeachheadConfig(deployDir);
+            const statefulServices = Array.isArray(bhConfig?.stateful_services) ? bhConfig.stateful_services : [];
+            if (statefulServices.length > 0) {
+              const slug = (app.name || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+              const statefulNetwork = `${slug}-internal`;
+              await ensureNetwork(statefulNetwork);
+              const statefulOverridePath = path.join(deployDir, 'beachhead.stateful.override.yml');
+              if (fs.existsSync(statefulOverridePath)) {
+                await dockerComposeUpStateful(deployDir, `${slug}-stateful`, statefulServices, 'beachhead.stateful.override.yml');
+              }
+            }
+
             await dockerComposeStart(deployDir, 'beachhead.override.yml');
             started = true;
             logger.info(`App unpaused via compose start: ${app.name} (deploy #${dep.id})`);
