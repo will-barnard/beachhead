@@ -206,6 +206,16 @@ const MIGRATIONS = [
       INSERT INTO settings (key, value) VALUES ('staging_root_domain', '') ON CONFLICT DO NOTHING;
     `,
   },
+  {
+    // Per-app proxy network. Stops cross-app DNS collisions on the shared
+    // beachhead-net (e.g. two apps both naming a service "backend").
+    // Populated lazily by services/proxyNetwork.js#ensureForApp on app create
+    // and by the startup reconciliation pass for existing apps.
+    name: '020_add_proxy_network_name_to_apps',
+    sql: `
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS proxy_network_name TEXT;
+    `,
+  },
 ];
 
 async function migrate() {

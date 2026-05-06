@@ -8,9 +8,10 @@ const EnvVars = require('../models/envVars');
 const Settings = require('../models/settings');
 const StaticSites = require('../models/staticSites');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
-const { dockerComposeDown, dockerComposeRecreate, dockerComposeUpNoBuild, dockerComposeStop, dockerComposeStart, dockerComposeUpStateful, stopComposeProject, ensureNetwork } = require('../services/docker');
+const { dockerComposeDown, dockerComposeRecreate, dockerComposeUpNoBuild, dockerComposeStop, dockerComposeUpStateful, stopComposeProject, ensureNetwork } = require('../services/docker');
 const { startPausePlaceholder, stopPausePlaceholder } = require('../services/pause');
 const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames } = require('../services/composeWrapper');
+const proxyNetwork = require('../services/proxyNetwork');
 const { checkHealth } = require('../services/healthCheck');
 const config = require('../config');
 const logger = require('../logger');
@@ -89,6 +90,17 @@ router.post('/', async (req, res) => {
       name, repo_url: normalizedRepoUrl, domain, branch, public_service, public_port,
       auto_deploy, stop_previous, webhook_secret, system_app,
     });
+
+    // Provision the app's per-app proxy network and attach the infra
+    // containers so nginx-proxy / acme-companion can reach the app's
+    // public service once it's deployed. Failure here is not fatal — the
+    // worker's startup reconcile will catch up next boot.
+    try {
+      const proxyNet = await proxyNetwork.ensureForApp(app);
+      app.proxy_network_name = proxyNet;
+    } catch (err) {
+      logger.warn(`App ${app.name}: proxy network setup failed: ${err.message}`);
+    }
 
     logger.info(`App created: ${app.name} (${app.domain})`);
     res.status(201).json(app);
@@ -172,6 +184,14 @@ router.delete('/:id', async (req, res) => {
 
     // Also tear down a pause placeholder, if present
     try { await stopPausePlaceholder(app.id); } catch {}
+
+    // Tear down the app's per-app proxy network now that no containers
+    // remain attached. Best-effort — if removal fails (e.g. a stray
+    // container is still on it), the warning is logged and the network
+    // can be cleaned up later via system prune.
+    try { await proxyNetwork.tearDownForApp(app); } catch (err) {
+      logger.warn(`App ${app.name}: proxy network teardown failed: ${err.message}`);
+    }
 
     await Apps.delete(app.id);
     logger.info(`App deleted: ${app.name}`);
@@ -329,8 +349,22 @@ router.post('/:id/deployments/:deployId/rollback', async (req, res) => {
     const allServices = readAllServiceNames(deployDir);
     const transientServices = allServices.filter(s => !statefulServices.includes(s));
 
-    // Ensure the proxy network exists before starting containers
+    // Ensure the shared infra network exists and the app's per-app proxy
+    // network is provisioned with infra attached. Without this, a rollback
+    // to an old deployment whose override.yml still references the legacy
+    // beachhead-net would re-introduce the cross-app DNS collision.
     await ensureNetwork(config.deploy.dockerNetwork);
+    // Regenerate the rollback target's override so it targets the per-app
+    // proxy network. Without this, rolling back to a deployment that
+    // predates the network migration would put the container back on the
+    // shared beachhead-net and reintroduce the cross-app DNS collision.
+    // Container names embed the deploy ID, so compose detects the network
+    // change and recreates the container in place.
+    try {
+      await regenerateOverride(app, targetDep);
+    } catch (err) {
+      logger.warn(`Rollback: override regen failed for ${app.name}: ${err.message}`);
+    }
 
     // Start the target deployment's containers without rebuilding.
     // Images must still be in the local Docker cache from when this deployment ran.
@@ -373,12 +407,18 @@ router.post('/:id/deployments/:deployId/rollback', async (req, res) => {
 const SAFE_HOSTNAME = /^[a-zA-Z0-9][a-zA-Z0-9.-]+[a-zA-Z0-9]$/;
 
 /**
- * Helper to regenerate the compose override for the current deployment of an app.
- * Used by both the www route and endpoint mutations.
+ * Helper to regenerate the compose override for a deployment of an app.
+ * Used by the www route, endpoint mutations, rollback, and unpause.
+ *
+ * If `dep` is not provided, defaults to the app's last successful deployment.
+ * Always passes the app's per-app proxy network so live override edits don't
+ * accidentally put the public service back on the legacy shared network.
  */
-async function regenerateOverride(app) {
-  const dep = await Deployments.findLastSuccessful(app.id, -1);
-  if (!dep) return null;
+async function regenerateOverride(app, dep = null) {
+  if (!dep) {
+    dep = await Deployments.findLastSuccessful(app.id, -1);
+    if (!dep) return null;
+  }
 
   const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${dep.id}`);
   const bhConfig = readBeachheadConfig(deployDir);
@@ -403,6 +443,24 @@ async function regenerateOverride(app) {
     if (stagingRoot) stagingHost = `${app.staging_subdomain}.${stagingRoot}`;
   }
 
+  // Stateful network name (only applies if the app declares stateful_services)
+  const slug = (app.name || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+  const statefulServices = Array.isArray(bhConfig?.stateful_services) ? bhConfig.stateful_services : [];
+  const statefulNetwork = statefulServices.length > 0 ? `${slug}-internal` : null;
+
+  // Per-app proxy network — ensures www redirects, endpoint mutations,
+  // rollbacks, and unpause never re-attach the public service to the shared
+  // beachhead-net.
+  let appProxyNetwork = app.proxy_network_name;
+  if (!appProxyNetwork) {
+    try {
+      appProxyNetwork = await proxyNetwork.ensureForApp(app);
+      app.proxy_network_name = appProxyNetwork;
+    } catch (err) {
+      logger.warn(`regenerateOverride: proxy network setup failed for ${app.name}: ${err.message}`);
+    }
+  }
+
   const overrideContent = generateOverride({
     appSlug: app.name,
     deployId: dep.id,
@@ -412,8 +470,10 @@ async function regenerateOverride(app) {
     envVars,
     namedVolumes,
     wwwRedirect: app.www_redirect || false,
+    statefulNetwork,
     additionalEndpoints,
     stagingHost,
+    proxyNetwork: appProxyNetwork,
   });
   writeOverrideFile(deployDir, overrideContent);
 
@@ -664,9 +724,9 @@ router.post('/:id/unpause', async (req, res) => {
             // it via depends_on: condition: service_healthy.
             const bhConfig = readBeachheadConfig(deployDir);
             const statefulServices = Array.isArray(bhConfig?.stateful_services) ? bhConfig.stateful_services : [];
+            const slug = (app.name || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+            const statefulNetwork = statefulServices.length > 0 ? `${slug}-internal` : null;
             if (statefulServices.length > 0) {
-              const slug = (app.name || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
-              const statefulNetwork = `${slug}-internal`;
               await ensureNetwork(statefulNetwork);
               const statefulOverridePath = path.join(deployDir, 'beachhead.stateful.override.yml');
               if (fs.existsSync(statefulOverridePath)) {
@@ -674,7 +734,26 @@ router.post('/:id/unpause', async (req, res) => {
               }
             }
 
-            await dockerComposeStart(deployDir, 'beachhead.override.yml');
+            // Ensure the per-app proxy network is up and regenerate the
+            // override before starting. If the app was paused before the
+            // network migration, its override.yml still references
+            // beachhead-net — without regen, unpause would put it back on
+            // the shared network and reintroduce the DNS collision.
+            try {
+              await regenerateOverride(app, dep);
+            } catch (err) {
+              logger.warn(`Unpause: override regen failed for ${app.name}: ${err.message}`);
+            }
+
+            // Use `compose up --no-build` (not `compose start`) so that any
+            // override change since the containers were stopped — including
+            // the per-app proxy network migration we just regenerated above
+            // — actually takes effect. Compose recreates only the
+            // containers whose config drifted; matching ones are left alone
+            // or simply started.
+            const allServicesUnpause = readAllServiceNames(deployDir);
+            const transientServicesUnpause = allServicesUnpause.filter(s => !statefulServices.includes(s));
+            await dockerComposeUpNoBuild(deployDir, 'beachhead.override.yml', transientServicesUnpause);
             started = true;
             logger.info(`App unpaused via compose start: ${app.name} (deploy #${dep.id})`);
           } catch (err) {

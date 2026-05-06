@@ -7,7 +7,14 @@ const logger = require('../logger');
 /**
  * Generate beachhead.override.yml for a deployed app.
  * This adds proxy environment variables to the public service(s)
- * and connects them to the beachhead-net Docker network.
+ * and connects them to the app's dedicated proxy network.
+ *
+ * proxyNetwork: the per-app proxy network name (see services/proxyNetwork.js).
+ *   Each app has its own network so that compose-managed service aliases
+ *   (e.g. `backend`, `frontend`) don't collide across apps. nginx-proxy and
+ *   acme-companion are dynamically attached to each per-app network on app
+ *   creation. Falls back to `beachhead-net` if not provided so older callers
+ *   keep working until the app's startup reconcile assigns one.
  *
  * additionalEndpoints: optional array of { service, domain, port, wwwRedirect }
  * for apps with multiple public-facing services on different subdomains.
@@ -15,7 +22,7 @@ const logger = require('../logger');
  * stagingHost: optional fully-qualified hostname (e.g. "acme.dev.example.com")
  * that the public service should also respond to. Gets its own LE cert.
  */
-function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides, stagingHost }) {
+function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides, stagingHost, proxyNetwork }) {
   if (!publicService || !domain) {
     throw new Error('publicService and domain are required for compose override');
   }
@@ -28,8 +35,12 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
   // when old containers are still running during the new deploy's startup phase).
   const suffix = deployId ? `-d${deployId}` : '';
 
+  // Per-app proxy network. Falls back to the legacy shared network if not
+  // provided so existing call sites keep working during migration.
+  const proxyNet = proxyNetwork || 'beachhead-net';
+
   const networksSection = {
-    'beachhead-net': {
+    [proxyNet]: {
       external: true,
     },
   };
@@ -62,7 +73,7 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
           `VIRTUAL_PORT=${port}`,
           `LETSENCRYPT_HOST=${primaryHosts}`,
         ],
-        networks: ['beachhead-net'],
+        networks: [proxyNet],
       },
     },
     networks: networksSection,
@@ -91,8 +102,8 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
         } else {
           env.push(`LETSENCRYPT_HOST=${epHosts}`);
         }
-        if (!override.services[ep.service].networks.includes('beachhead-net')) {
-          override.services[ep.service].networks.push('beachhead-net');
+        if (!override.services[ep.service].networks.includes(proxyNet)) {
+          override.services[ep.service].networks.push(proxyNet);
         }
       } else {
         override.services[ep.service] = {
@@ -103,7 +114,7 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
             `VIRTUAL_PORT=${epPort}`,
             `LETSENCRYPT_HOST=${epHosts}`,
           ],
-          networks: ['beachhead-net'],
+          networks: [proxyNet],
         };
       }
     }

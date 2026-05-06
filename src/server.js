@@ -7,6 +7,7 @@ const config = require('./config');
 const logger = require('./logger');
 const { migrate } = require('./db/migrate');
 const worker = require('./services/worker');
+const proxyNetwork = require('./services/proxyNetwork');
 
 // Routes
 const appsRouter = require('./routes/apps');
@@ -106,6 +107,17 @@ async function start() {
     // Initialise auth — must happen after migrations so the users table exists
     const { refreshUserCount, isBootstrapMode } = require('./middleware/auth');
     await refreshUserCount();
+
+    // Reconcile per-app proxy networks before the worker starts. Idempotent;
+    // ensures every app has a network, the network exists, and the infra
+    // containers (nginx-proxy, acme-companion) are attached. Self-heals after
+    // any force-recreate of the Beachhead stack and migrates apps created
+    // before this change had a `proxy_network_name`.
+    try {
+      await proxyNetwork.reconcileAll();
+    } catch (err) {
+      logger.error(`Proxy network reconcile failed: ${err.message}`);
+    }
 
     // Start deployment worker
     worker.start();

@@ -13,6 +13,7 @@ const config = require('../config');
 const logger = require('../logger');
 const BuildJobs = require('../models/buildJobs');
 const Settings = require('../models/settings');
+const proxyNetwork = require('./proxyNetwork');
 
 const STATES = Deployments.STATES;
 const POLL_INTERVAL = 5000;
@@ -180,6 +181,13 @@ async function processDeployment(deployment) {
       if (stagingRoot) stagingHost = `${app.staging_subdomain}.${stagingRoot}`;
     }
 
+    // Ensure the per-app proxy network exists and that the infra containers
+    // are attached. Idempotent — covers freshly-created apps (already wired
+    // by routes/apps.js#create) and apps migrated from the old shared
+    // beachhead-net (no proxy_network_name yet).
+    const appProxyNetwork = await proxyNetwork.ensureForApp(app);
+    app.proxy_network_name = appProxyNetwork;
+
     const overrideContent = generateOverride({
       appSlug: app.name,
       deployId: deployment.id,
@@ -192,6 +200,7 @@ async function processDeployment(deployment) {
       statefulNetwork,
       additionalEndpoints,
       stagingHost,
+      proxyNetwork: appProxyNetwork,
     });
     writeOverrideFile(deployDir, overrideContent);
 
@@ -257,6 +266,7 @@ async function processDeployment(deployment) {
           statefulNetwork,
           additionalEndpoints,
           imageOverrides,
+          proxyNetwork: appProxyNetwork,
         });
         writeOverrideFile(deployDir, updatedOverride);
         fs.chmodSync(path.join(deployDir, 'beachhead.override.yml'), 0o600);
@@ -388,6 +398,45 @@ async function processDeployment(deployment) {
 }
 
 /**
+ * Regenerate the compose override for an existing deployment using the
+ * current Beachhead generator. Called by startupCleanup so apps that
+ * predate later override-format changes (e.g. the per-app proxy network
+ * migration) pick up the new shape on the next Beachhead restart without
+ * needing a fresh clone+build. Container names stay stable so compose
+ * recreates the existing container in place.
+ */
+async function regenerateOverride({ app, deployment, deployDir, publicService, publicPort, statefulNetwork, proxyNetworkName }) {
+  if (!publicService) return; // no public service => nothing to override
+  const envVars = await EnvVars.getByAppId(app.id);
+  const namedVolumes = readNamedVolumes(deployDir);
+  const endpoints = await AppEndpoints.findByAppId(app.id);
+  const additionalEndpoints = endpoints.map(ep => ({
+    service: ep.service, domain: ep.domain, port: ep.port || 80, wwwRedirect: ep.www_redirect || false,
+  }));
+  let stagingHost = null;
+  if (app.staging_subdomain) {
+    const stagingRoot = await Settings.getStagingRootDomain();
+    if (stagingRoot) stagingHost = `${app.staging_subdomain}.${stagingRoot}`;
+  }
+  const overrideContent = generateOverride({
+    appSlug: app.name,
+    deployId: deployment.id,
+    publicService,
+    domain: app.domain,
+    publicPort: publicPort || 80,
+    envVars,
+    namedVolumes,
+    wwwRedirect: app.www_redirect || false,
+    statefulNetwork,
+    additionalEndpoints,
+    stagingHost,
+    proxyNetwork: proxyNetworkName,
+  });
+  writeOverrideFile(deployDir, overrideContent);
+  fs.chmodSync(path.join(deployDir, 'beachhead.override.yml'), 0o600);
+}
+
+/**
  * Stop all deploy-project containers for an app EXCEPT the given keepDeployId.
  * Catches strays from crashes, failed teardowns, or duplicate deploys that share
  * the same VIRTUAL_HOST and cause nginx-proxy to route to unhealthy containers.
@@ -479,18 +528,45 @@ async function startupCleanup() {
 
       try {
         logger.info(`[startup] Ensuring deployment #${current.id} is running for ${app.name}`);
+        // Make sure the shared infra network exists (defensive — usually
+        // created by Beachhead's own compose stack) and that this app's
+        // per-app proxy network is provisioned with infra attached.
         await ensureNetwork(config.deploy.dockerNetwork);
+        let appProxyNetwork = null;
+        try {
+          appProxyNetwork = await proxyNetwork.ensureForApp(app);
+          app.proxy_network_name = appProxyNetwork;
+        } catch (err) {
+          logger.warn(`[startup] proxy network setup failed for ${app.name}: ${err.message}`);
+        }
 
         // Also ensure stateful services are running
         const bhConfig = readBeachheadConfig(deployDir);
         const statefulServices = Array.isArray(bhConfig?.stateful_services) ? bhConfig.stateful_services : [];
+        const slug = (app.name || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
+        const statefulNetwork = statefulServices.length > 0 ? `${slug}-internal` : null;
         if (statefulServices.length > 0) {
-          const slug = (app.name || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app';
-          const statefulNetwork = `${slug}-internal`;
           await ensureNetwork(statefulNetwork);
           const statefulOverridePath = path.join(deployDir, 'beachhead.stateful.override.yml');
           if (fs.existsSync(statefulOverridePath)) {
             await dockerComposeUpStateful(deployDir, `${slug}-stateful`, statefulServices, 'beachhead.stateful.override.yml');
+          }
+        }
+
+        // Regenerate the override file so existing deployments pick up the
+        // current generator's output — in particular, the per-app proxy
+        // network. Container names are stable (they include deployId) so
+        // compose detects the network change and recreates the container in
+        // place; existing images stay cached, no rebuild needed.
+        if (appProxyNetwork) {
+          try {
+            await regenerateOverride({
+              app, deployment: current, deployDir, publicService: bhConfig?.public_service || app.public_service,
+              publicPort: bhConfig?.public_port || app.public_port, statefulNetwork,
+              proxyNetworkName: appProxyNetwork,
+            });
+          } catch (err) {
+            logger.warn(`[startup] Could not regenerate override for ${app.name}: ${err.message}`);
           }
         }
 

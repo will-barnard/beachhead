@@ -9,7 +9,7 @@
 ## How Beachhead deploys your app
 
 1. Clones your repo into a fresh directory per deployment
-2. Writes a `beachhead.override.yml` that adds `VIRTUAL_HOST`, `VIRTUAL_PORT`, `LETSENCRYPT_HOST` to your public service, connects it to the `beachhead-net` Docker network, and sets a unique `container_name` per deployment
+2. Writes a `beachhead.override.yml` that adds `VIRTUAL_HOST`, `VIRTUAL_PORT`, `LETSENCRYPT_HOST` to your public service, connects it to the app's dedicated proxy network (`bh-app-{id}`, isolated from other apps to prevent service-name DNS collisions), and sets a unique `container_name` per deployment
 3. Writes a `.env` file in the repo root from any **global** env vars you've configured in the dashboard
 4. Runs `docker compose -f docker-compose.yml -f beachhead.override.yml up -d --build`
 5. Health-checks your domain over HTTPS
@@ -85,7 +85,7 @@ The resulting override provides each service with its own routing:
 - WWW redirect (`www.domain.com → domain.com`) can be enabled independently per endpoint
 - Endpoints are applied on the next deploy automatically; if the app is already running, Beachhead live-restarts the affected container
 
-**Common failure mode:** If a secondary service doesn't appear in nginx-proxy, confirm it has `expose:` set and is on the same `beachhead-net` external network (Beachhead's override handles this automatically via the `networks` block).
+**Common failure mode:** If a secondary service doesn't appear in nginx-proxy, confirm it has `expose:` set; Beachhead's override automatically attaches it to the app's per-app proxy network (`bh-app-{id}`) via the `networks` block.
 
 ---
 
@@ -245,7 +245,7 @@ volumes:
 |---------|-------|-----|
 | `backend could not be resolved` / 502 on all API calls | No explicit internal network — Beachhead's override replaces the frontend's implicit default network, cutting it off from the backend | Add `networks: [internal]` to every service and `networks: {internal:}` at the top level |
 | `dependency failed to start: container is unhealthy` | Postgres health check fires before init completes | Add `start_period: 30s` to healthcheck |
-| 502 from nginx after redeploy | Old frontend container still on `beachhead-net`, proxying to a backend that no longer exists | Beachhead auto-cleans up on success; for manual recovery `docker stop <old-frontend-container>` |
+| 502 from nginx after redeploy | Old frontend container still attached to the app's proxy network, proxying to a backend that no longer exists | Beachhead auto-cleans up on success; for manual recovery `docker stop <old-frontend-container>` |
 | `${DB_PASSWORD}` empty in postgres | Env var is targeted to `backend` only, not written to `.env` | Set `DB_PASSWORD` as a global env var (no target service) |
 | Data wiped on every deploy / logged out after redeploy | Volume uses `driver: local` with no `name:` | Replace with `name: myapp-postgres` — `driver: local` scopes the volume to the deploy directory |
 | Container name conflict on redeploy / deploy fails at STARTING_CONTAINERS | `container_name` hardcoded in `docker-compose.yml`, conflicts with still-running previous deploy | Remove all `container_name` entries — Beachhead sets unique names per deployment via its override |
