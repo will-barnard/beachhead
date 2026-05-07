@@ -65,8 +65,47 @@ function slugify(name) {
 }
 
 /**
+ * Confirm a container actually reached the "running" state — useful right
+ * after `docker run` so we don't proceed thinking a placeholder is up when
+ * its nginx config crashed and the container exited.
+ */
+async function isContainerRunning(name) {
+  try {
+    const { stdout } = await exec('docker', [
+      'inspect', '-f', '{{.State.Running}}', name,
+    ], { timeout: 5000, silent: true });
+    return stdout.trim() === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Wait up to `timeoutMs` for `name` to be in the running state. Returns
+ * true on success, false on timeout. Polls cheaply.
+ */
+async function waitUntilRunning(name, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isContainerRunning(name)) return true;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  return false;
+}
+
+/**
  * Auto-pause an app. Idempotent — calling on an already auto-paused app is a
  * no-op. Returns true if any work was done.
+ *
+ * Order is deliberate to avoid a 503 window:
+ *   1. Start placeholders FIRST and verify each one stayed up.
+ *   2. Give nginx-proxy a few seconds to register them via docker-gen.
+ *   3. Mark the app auto_paused so the wake endpoint will trigger.
+ *   4. Stop the live containers.
+ *
+ * If any placeholder fails to start, we tear down whatever we've started
+ * and bail out without touching the live containers — the app keeps
+ * running and we'll try again on the next idle sweep.
  */
 async function autoPause(app) {
   if (!app.on_demand) return false;
@@ -90,22 +129,57 @@ async function autoPause(app) {
   const plan = planPause({ deployDir, app, bhConfig });
   const slug = slugify(app.name);
 
-  // Mark first so the activity tracker doesn't immediately resurrect us
-  // mid-flight. last_active_at is left as-is so we can debug "how long was
-  // it asleep?".
+  // ── 1. Start placeholders FIRST and verify each one is actually up. ──
+  const publicServices = await publicServiceDomains({ app, bhConfig });
+  const alwaysOn = new Set(app.always_on_services || []);
+  const placeholdersToCreate = publicServices.filter(({ service }) => !alwaysOn.has(service));
+
+  if (placeholdersToCreate.length === 0) {
+    // Edge case: every public service is always-on. There's nothing to
+    // placeholder; just record auto_paused for accounting and stop the
+    // non-public stoppables below.
+    logger.info(`onDemand.autoPause: app ${app.name} has no pause-able public services (all always-on)`);
+  } else {
+    const startedNames = [];
+    for (const { service, domain } of placeholdersToCreate) {
+      try {
+        const name = await startAutoPausePlaceholder({ app, service, domain });
+        const alive = await waitUntilRunning(name, 5000);
+        if (!alive) {
+          // Capture the container's logs so the operator can see WHY it
+          // exited (almost always an nginx config error).
+          let logsExcerpt = '';
+          try {
+            const { stdout, stderr } = await exec('docker', ['logs', '--tail', '40', name], { timeout: 5000, silent: true });
+            logsExcerpt = ((stdout || '') + (stderr || '')).trim().slice(-1000);
+          } catch { /* best-effort */ }
+          throw new Error(`placeholder ${name} exited immediately. Last log lines:\n${logsExcerpt || '(none captured)'}`);
+        }
+        startedNames.push(name);
+      } catch (err) {
+        logger.error(`onDemand.autoPause: aborting — placeholder for ${service}/${domain} failed: ${err.message}`);
+        // Roll back any placeholders we already started so we don't end up
+        // double-routing the user's domain to a half-working placeholder.
+        await stopAutoPausePlaceholders(app.id);
+        return false;
+      }
+    }
+    logger.info(`onDemand.autoPause: ${startedNames.length} placeholder(s) up for ${app.name}: ${startedNames.join(', ')}`);
+
+    // ── 2. Give nginx-proxy a moment to notice the new container(s). ──
+    //   docker-gen debounces config reloads (default ~2s). If we stop the
+    //   live upstream before nginx-proxy has the placeholder registered,
+    //   visitors get a 503 in the gap.
+    await new Promise(r => setTimeout(r, 3000));
+  }
+
+  // ── 3. Now it's safe to flip the auto_paused flag. ──
   await Apps.update(app.id, { auto_paused: true });
 
-  // 1) Stop transient services that aren't always-on.
+  // ── 4. Stop transient services that aren't always-on. ──
   if (plan.stoppableTransient.length > 0) {
     try {
-      // We stop via container_name (deterministic from override) rather than
-      // `compose stop <svc>` so we don't need the override file's exact path
-      // mounted; this also cleanly leaves always-on containers running.
-      const ids = [];
-      for (const svc of plan.stoppableTransient) {
-        ids.push(`${slug}-${svc}-d${dep.id}`);
-      }
-      // Filter to ones that actually exist & are running.
+      const ids = plan.stoppableTransient.map(svc => `${slug}-${svc}-d${dep.id}`);
       const { stdout } = await exec('docker', ['ps', '--format', '{{.Names}}', '--filter', `label=com.docker.compose.project=deploy-${dep.id}`], { timeout: 10000, silent: true });
       const running = new Set(stdout.split('\n').map(s => s.trim()).filter(Boolean));
       const toStop = ids.filter(id => running.has(id));
@@ -118,28 +192,13 @@ async function autoPause(app) {
     }
   }
 
-  // 2) Stop stateful project entirely if no stateful service is always-on.
-  //    (Mixing partial stops on the stateful project is messy; keeping it
-  //    all-or-nothing keeps semantics simple.)
+  // ── 5. Stop stateful project if no stateful service is always-on. ──
   if (plan.statefulServices.length > 0 && plan.alwaysOnStateful.length === 0) {
     try {
       await stopComposeProject(`${slug}-stateful`);
       logger.info(`onDemand.autoPause: stopped stateful project for ${app.name}`);
     } catch (err) {
       logger.warn(`onDemand.autoPause: failed to stop stateful project for ${app.name}: ${err.message}`);
-    }
-  }
-
-  // 3) Start a wake placeholder for every public-facing service we just stopped.
-  //    Always-on public services keep serving normally — no placeholder.
-  const publicServices = await publicServiceDomains({ app, bhConfig });
-  const alwaysOn = new Set(app.always_on_services || []);
-  for (const { service, domain } of publicServices) {
-    if (alwaysOn.has(service)) continue;
-    try {
-      await startAutoPausePlaceholder({ app, service, domain });
-    } catch (err) {
-      logger.warn(`onDemand.autoPause: placeholder for ${service}/${domain} failed: ${err.message}`);
     }
   }
 
@@ -211,13 +270,32 @@ async function autoWake(app) {
   return { woken: true };
 }
 
-// Single-flight guard so concurrent wake requests don't double-up.
-const wakeInFlight = new Map();
-function wakeOnce(app) {
-  if (wakeInFlight.has(app.id)) return wakeInFlight.get(app.id);
-  const p = autoWake(app).finally(() => wakeInFlight.delete(app.id));
-  wakeInFlight.set(app.id, p);
-  return p;
+// Per-app mutex for the pause/wake state machine. Both autoPause and
+// autoWake acquire it so a wake request that arrives mid-pause can't
+// interleave with the pause sequence (and vice versa). Each entry is the
+// promise of the currently-running transition; subsequent callers wait for
+// it before starting their own.
+const transitionLocks = new Map();
+async function withTransitionLock(appId, fn) {
+  const prev = transitionLocks.get(appId);
+  let release;
+  const ours = new Promise(r => { release = r; });
+  // Chain after any in-flight transition so we run after it settles.
+  const chain = (prev || Promise.resolve()).then(() => fn()).finally(() => {
+    // Clear the slot only if no newer waiter took our place.
+    if (transitionLocks.get(appId) === ours) transitionLocks.delete(appId);
+    release();
+  });
+  transitionLocks.set(appId, ours);
+  return chain;
+}
+
+// Public-facing wrappers — same names as before, now mutex-guarded.
+function autoPauseLocked(app) {
+  return withTransitionLock(app.id, () => autoPause(app));
+}
+function autoWakeLocked(app) {
+  return withTransitionLock(app.id, () => autoWake(app));
 }
 
 /**
@@ -237,10 +315,6 @@ async function idleSweep() {
   for (const app of candidates) {
     const lastActive = app.last_active_at ? new Date(app.last_active_at).getTime() : null;
     const idleSecs = app.idle_timeout_seconds || 1800;
-    // If we've never seen activity, treat the active_deployment's creation
-    // as the baseline so a freshly-deployed on-demand app doesn't get paused
-    // before anyone has hit it. But if it's been idle for >2× the timeout
-    // since deploy and still no activity, pause it anyway.
     let referenceMs = lastActive;
     if (!referenceMs && app.active_deployment_id) {
       try {
@@ -253,7 +327,9 @@ async function idleSweep() {
     const idleMs = now - referenceMs;
     if (idleMs >= idleSecs * 1000) {
       try {
-        await autoPause(app);
+        // Mutex-guarded so a wake request that arrives concurrently waits
+        // until our pause settles (or vice versa).
+        await autoPauseLocked(app);
       } catch (err) {
         logger.warn(`onDemand.idleSweep: autoPause(${app.name}) failed: ${err.message}`);
       }
@@ -277,8 +353,8 @@ function listAppServices(app) {
 }
 
 module.exports = {
-  autoPause,
-  autoWake: wakeOnce,
+  autoPause: autoPauseLocked,
+  autoWake: autoWakeLocked,
   idleSweep,
   listAppServices,
 };
