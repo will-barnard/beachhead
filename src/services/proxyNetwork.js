@@ -38,10 +38,12 @@ function networkNameForApp(app) {
 
 /**
  * Create the network if it doesn't exist. Idempotent — safe to call repeatedly.
+ * Uses `silent: true` on the existence probe so a missing network doesn't
+ * log a misleading "Command failed".
  */
 async function ensureNetwork(networkName) {
   try {
-    await exec('docker', ['network', 'inspect', networkName], { timeout: 10000 });
+    await exec('docker', ['network', 'inspect', networkName], { timeout: 10000, silent: true });
     return false; // already existed
   } catch {
     await exec('docker', ['network', 'create', networkName], { timeout: 15000 });
@@ -51,19 +53,40 @@ async function ensureNetwork(networkName) {
 }
 
 /**
+ * Return the set of container names attached to a network, or null if the
+ * network doesn't exist. Used to make connect/disconnect idempotent without
+ * relying on string-matching docker's error messages (which would otherwise
+ * surface as scary "Command failed" log lines).
+ */
+async function networkMembers(networkName) {
+  try {
+    const { stdout } = await exec('docker', [
+      'network', 'inspect', networkName,
+      '--format', '{{range .Containers}}{{.Name}}{{println}}{{end}}',
+    ], { timeout: 10000, silent: true });
+    return new Set(stdout.split('\n').map(s => s.trim()).filter(Boolean));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Connect a container to a network if it's not already connected.
  * Returns true if a new connection was made.
- *
- * Docker's `network connect` errors with "endpoint already exists" when the
- * container is already on the network — we treat that as success.
  */
 async function connectContainer(networkName, container) {
+  const members = await networkMembers(networkName);
+  if (members && members.has(container)) {
+    return false; // already connected — no work, no log noise
+  }
   try {
-    await exec('docker', ['network', 'connect', networkName, container], { timeout: 15000 });
+    await exec('docker', ['network', 'connect', networkName, container], { timeout: 15000, silent: true });
     logger.info(`Connected ${container} to ${networkName}`);
     return true;
   } catch (err) {
     const msg = err.message || '';
+    // Race: another reconcile pass connected it between our check and the
+    // call. Treat as success.
     if (/already exists in network|is already attached to network/i.test(msg)) {
       return false;
     }
@@ -74,6 +97,8 @@ async function connectContainer(networkName, container) {
       logger.warn(`Cannot connect ${container} to ${networkName}: container not present yet`);
       return false;
     }
+    // Real failure — log it now (we suppressed the inner exec log).
+    logger.error(`Failed to connect ${container} to ${networkName}: ${msg}`);
     throw err;
   }
 }
@@ -83,8 +108,12 @@ async function connectContainer(networkName, container) {
  * Best-effort — never throws.
  */
 async function disconnectContainer(networkName, container) {
+  const members = await networkMembers(networkName);
+  if (!members || !members.has(container)) {
+    return; // network gone, or container not on it — nothing to do
+  }
   try {
-    await exec('docker', ['network', 'disconnect', '--force', networkName, container], { timeout: 15000 });
+    await exec('docker', ['network', 'disconnect', '--force', networkName, container], { timeout: 15000, silent: true });
     logger.info(`Disconnected ${container} from ${networkName}`);
   } catch (err) {
     const msg = err.message || '';
@@ -101,7 +130,7 @@ async function disconnectContainer(networkName, container) {
  */
 async function removeNetwork(networkName) {
   try {
-    await exec('docker', ['network', 'rm', networkName], { timeout: 10000 });
+    await exec('docker', ['network', 'rm', networkName], { timeout: 10000, silent: true });
     logger.info(`Removed Docker network: ${networkName}`);
   } catch (err) {
     logger.warn(`Could not remove network ${networkName}: ${err.message}`);

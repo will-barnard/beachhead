@@ -14,6 +14,7 @@ const logger = require('../logger');
 const BuildJobs = require('../models/buildJobs');
 const Settings = require('../models/settings');
 const proxyNetwork = require('./proxyNetwork');
+const onDemand = require('./onDemand');
 
 const STATES = Deployments.STATES;
 const POLL_INTERVAL = 5000;
@@ -467,12 +468,30 @@ async function recoverStaleDeployments() {
   }
 }
 
+// Idle sweep runs much less often than the deployment poll. Rather than spin
+// up a separate timer, we time-stamp the last sweep and only call it when
+// enough time has elapsed.
+const IDLE_SWEEP_INTERVAL_MS = 60_000;
+let lastIdleSweepAt = 0;
+
 async function poll() {
   if (!running) return;
 
   try {
     // Periodically recover stuck deployments
     await recoverStaleDeployments();
+
+    // On-demand idle sweep — auto-pauses on-demand apps that have been idle
+    // past their threshold. Cheap when there are no candidates, so safe to
+    // call from the same loop.
+    if (Date.now() - lastIdleSweepAt >= IDLE_SWEEP_INTERVAL_MS) {
+      lastIdleSweepAt = Date.now();
+      try {
+        await onDemand.idleSweep();
+      } catch (err) {
+        logger.warn(`onDemand idle sweep failed: ${err.message}`);
+      }
+    }
 
     const job = await Deployments.getNextPending();
     if (job) {

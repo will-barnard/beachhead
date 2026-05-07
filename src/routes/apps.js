@@ -9,7 +9,7 @@ const Settings = require('../models/settings');
 const StaticSites = require('../models/staticSites');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
 const { dockerComposeDown, dockerComposeRecreate, dockerComposeUpNoBuild, dockerComposeStop, dockerComposeUpStateful, stopComposeProject, ensureNetwork } = require('../services/docker');
-const { startPausePlaceholder, stopPausePlaceholder } = require('../services/pause');
+const { startPausePlaceholder, stopPausePlaceholder, stopAutoPausePlaceholders } = require('../services/pause');
 const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames } = require('../services/composeWrapper');
 const proxyNetwork = require('../services/proxyNetwork');
 const { checkHealth } = require('../services/healthCheck');
@@ -621,9 +621,12 @@ router.post('/:id/pause', async (req, res) => {
       redirectUrl = url;
     }
 
-    // Persist state first so any concurrent webhooks see the paused flag
-    const updated = await Apps.update(app.id, { paused: true, paused_redirect_url: redirectUrl });
+    // Persist state first so any concurrent webhooks see the paused flag.
+    // Also clear auto_paused so manual pause supersedes any in-flight idle
+    // pause; the on-demand placeholders are torn down right after.
+    const updated = await Apps.update(app.id, { paused: true, paused_redirect_url: redirectUrl, auto_paused: false });
     Object.assign(app, updated);
+    try { await stopAutoPausePlaceholders(app.id); } catch {}
 
     // Stop the active deployment's containers (best-effort).
     // Use `compose stop` (not `down`) so containers survive in an exited state —
@@ -763,8 +766,13 @@ router.post('/:id/unpause', async (req, res) => {
       }
     }
 
-    // Clear paused state regardless of which path we took
-    await Apps.update(app.id, { paused: false, paused_redirect_url: null });
+    // Clear paused state regardless of which path we took. Also clear any
+    // auto_paused state and tear down on-demand placeholders so the two
+    // pause modes can't end up layered on top of each other after a manual
+    // unpause. Bump last_active_at so the idle sweep doesn't immediately
+    // re-pause a freshly-unpaused on-demand app.
+    await Apps.update(app.id, { paused: false, paused_redirect_url: null, auto_paused: false, last_active_at: new Date() });
+    try { await stopAutoPausePlaceholders(app.id); } catch {}
 
     if (started) {
       return res.json({ message: 'App unpaused — containers restarted', mode: 'start' });
@@ -918,6 +926,137 @@ router.post('/:id/endpoints/:endpointId/www', async (req, res) => {
     res.json({ message: `WWW enabled for www.${endpoint.domain}` });
   } catch (err) {
     logger.error('Failed to enable www for endpoint', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── On-demand (scale-to-zero) ──
+
+const onDemand = require('../services/onDemand');
+
+const IDLE_MIN_SECONDS = 60;            // 1 min — anything shorter is a footgun
+const IDLE_MAX_SECONDS = 24 * 60 * 60;  // 24 h
+const WAKE_HTML_MAX_LEN = 32 * 1024;    // 32 KB
+
+/**
+ * GET /apps/:id/on-demand
+ * Returns current on-demand config + the list of services in the app's
+ * compose file (so the dashboard can render an always-on multi-select).
+ */
+router.get('/:id/on-demand', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+    res.json({
+      on_demand: !!app.on_demand,
+      idle_timeout_seconds: app.idle_timeout_seconds || 1800,
+      always_on_services: app.always_on_services || [],
+      auto_paused: !!app.auto_paused,
+      last_active_at: app.last_active_at || null,
+      wake_page_html: app.wake_page_html || null,
+      services: onDemand.listAppServices(app),
+    });
+  } catch (err) {
+    logger.error('Failed to load on-demand config', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * PUT /apps/:id/on-demand
+ * Update on-demand configuration. Body fields (all optional):
+ *   on_demand: boolean
+ *   idle_timeout_seconds: number   (60..86400)
+ *   always_on_services: string[]
+ *   wake_page_html: string|null
+ *
+ * Toggling on_demand from true → false also wakes the app if it's currently
+ * auto-paused, so the operator never gets stuck with a permanently-asleep
+ * app after disabling the feature.
+ */
+router.put('/:id/on-demand', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+    if (app.system_app) return res.status(400).json({ error: 'On-demand is not available for system apps' });
+
+    const updates = {};
+    const { on_demand, idle_timeout_seconds, always_on_services, wake_page_html } = req.body || {};
+
+    if (typeof on_demand === 'boolean') updates.on_demand = on_demand;
+
+    if (idle_timeout_seconds !== undefined) {
+      const n = Number(idle_timeout_seconds);
+      if (!Number.isInteger(n) || n < IDLE_MIN_SECONDS || n > IDLE_MAX_SECONDS) {
+        return res.status(400).json({ error: `idle_timeout_seconds must be an integer between ${IDLE_MIN_SECONDS} and ${IDLE_MAX_SECONDS}` });
+      }
+      updates.idle_timeout_seconds = n;
+    }
+
+    if (always_on_services !== undefined) {
+      if (!Array.isArray(always_on_services) || always_on_services.some(s => typeof s !== 'string' || !/^[a-zA-Z0-9._-]+$/.test(s))) {
+        return res.status(400).json({ error: 'always_on_services must be an array of valid service names' });
+      }
+      updates.always_on_services = always_on_services;
+    }
+
+    if (wake_page_html !== undefined) {
+      if (wake_page_html === null || wake_page_html === '') {
+        updates.wake_page_html = null;
+      } else if (typeof wake_page_html !== 'string' || wake_page_html.length > WAKE_HTML_MAX_LEN) {
+        return res.status(400).json({ error: `wake_page_html must be a string under ${WAKE_HTML_MAX_LEN} bytes` });
+      } else {
+        updates.wake_page_html = wake_page_html;
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    // If turning on-demand off, wake the app first so it doesn't get stuck.
+    const wasOnDemand = !!app.on_demand;
+    const turningOff = wasOnDemand && updates.on_demand === false;
+
+    const updated = await Apps.update(app.id, updates);
+
+    if (turningOff && app.auto_paused) {
+      try {
+        await onDemand.autoWake(app);
+      } catch (err) {
+        logger.warn(`Could not wake ${app.name} when disabling on-demand: ${err.message}`);
+      }
+      // Defensive: even if wake failed, drop placeholders so the domain
+      // isn't permanently stuck on a 'waking up' page.
+      try { await stopAutoPausePlaceholders(app.id); } catch {}
+      try { await Apps.update(app.id, { auto_paused: false }); } catch {}
+    }
+
+    logger.info(`On-demand config updated for ${app.name}: ${JSON.stringify(updates)}`);
+    res.json(updated);
+  } catch (err) {
+    logger.error('Failed to update on-demand config', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /apps/:id/auto-pause
+ * Manually trigger an immediate auto-pause (useful for testing or for
+ * operators who want to pre-pause an app before going on holiday).
+ */
+router.post('/:id/auto-pause', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+    if (!app.on_demand) return res.status(400).json({ error: 'App is not on-demand' });
+    if (app.paused) return res.status(409).json({ error: 'App is manually paused' });
+    if (app.auto_paused) return res.json({ message: 'Already auto-paused' });
+
+    const did = await onDemand.autoPause(app);
+    res.json({ message: did ? 'App auto-paused' : 'No-op' });
+  } catch (err) {
+    logger.error('Auto-pause failed', err);
     res.status(500).json({ error: err.message });
   }
 });

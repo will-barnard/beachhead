@@ -27,10 +27,16 @@ function exec(command, args, options = {}) {
 
     execFile(command, args, opts, (err, stdout, stderr) => {
       if (err) {
-        logger.error(`Command failed: ${command} ${args.join(' ')}`, {
-          exitCode: err.code,
-          stderr: stderr?.slice(0, 2000),
-        });
+        // Callers that intentionally tolerate failures (e.g. idempotent
+        // network connect/disconnect) can pass `silent: true` to suppress
+        // the error log here; the rejected Promise still surfaces the
+        // failure to the caller, which then decides whether it's benign.
+        if (!options.silent) {
+          logger.error(`Command failed: ${command} ${args.join(' ')}`, {
+            exitCode: err.code,
+            stderr: stderr?.slice(0, 2000),
+          });
+        }
         return reject(new Error(`${command} failed: ${stderr || err.message}`));
       }
       resolve({ stdout, stderr, exitCode: 0 });

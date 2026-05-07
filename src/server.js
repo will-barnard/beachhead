@@ -8,6 +8,7 @@ const logger = require('./logger');
 const { migrate } = require('./db/migrate');
 const worker = require('./services/worker');
 const proxyNetwork = require('./services/proxyNetwork');
+const activityTracker = require('./services/activityTracker');
 
 // Routes
 const appsRouter = require('./routes/apps');
@@ -18,6 +19,7 @@ const bootstrapRouter = require('./routes/bootstrap');
 const staticSitesRouter = require('./routes/staticSites');
 const systemRouter = require('./routes/system');
 const jobsRouter = require('./routes/jobs');
+const wakeRouter = require('./routes/wake');
 
 const app = express();
 
@@ -58,6 +60,10 @@ app.use(express.json());
 app.use('/api', apiLimiter);
 
 // API routes
+// /api/wake/:id is mounted BEFORE the authed app router so it stays public —
+// the on-demand placeholder served on the user's own domain calls it via a
+// same-origin proxy and has no Beachhead session.
+app.use('/api/wake', wakeRouter);
 app.use('/api/apps', appsRouter);
 app.use('/api/apps', envVarsRouter);
 app.use('/api/apps', envFilesRouter);
@@ -119,6 +125,14 @@ async function start() {
       logger.error(`Proxy network reconcile failed: ${err.message}`);
     }
 
+    // Start the activity tracker (tails nginx-proxy access log → bumps
+    // last_active_at on matching apps for the on-demand idle sweep).
+    try {
+      activityTracker.start();
+    } catch (err) {
+      logger.error(`Activity tracker failed to start: ${err.message}`);
+    }
+
     // Start deployment worker
     worker.start();
 
@@ -137,12 +151,14 @@ async function start() {
 process.on('SIGTERM', () => {
   logger.info('SIGTERM received, shutting down');
   worker.stop();
+  try { activityTracker.stop(); } catch {}
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
   logger.info('SIGINT received, shutting down');
   worker.stop();
+  try { activityTracker.stop(); } catch {}
   process.exit(0);
 });
 

@@ -216,6 +216,27 @@ const MIGRATIONS = [
       ALTER TABLE apps ADD COLUMN IF NOT EXISTS proxy_network_name TEXT;
     `,
   },
+  {
+    // On-demand (scale-to-zero) mode. Opt-in per app:
+    //   on_demand              — toggle the feature
+    //   idle_timeout_seconds   — how long with no traffic before auto-pausing
+    //   last_active_at         — bumped by the activity tracker on each request
+    //   auto_paused            — distinguishes idle pause from manual pause
+    //   always_on_services     — list of compose service names that should
+    //                            keep running even when the app is auto-paused
+    //                            (typical use: a backend that handles webhooks
+    //                            or a stateful service that has slow startup)
+    //   wake_page_html         — optional custom HTML for the wake placeholder
+    name: '021_add_on_demand_to_apps',
+    sql: `
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS on_demand BOOLEAN DEFAULT false;
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS idle_timeout_seconds INT DEFAULT 1800;
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ;
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS auto_paused BOOLEAN DEFAULT false;
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS always_on_services TEXT[] DEFAULT '{}';
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS wake_page_html TEXT;
+    `,
+  },
 ];
 
 async function migrate() {

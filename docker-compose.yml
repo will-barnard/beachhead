@@ -29,6 +29,9 @@ services:
       - ${DEPLOY_BASE_DIR:-/var/beachhead/deployments}:${DEPLOY_BASE_DIR:-/var/beachhead/deployments}
       - ./.env:/app/.env.host
       - ./nginx/vhost.d:/etc/nginx/vhost.d
+      # Read nginx-proxy's access log (shared volume below) for the
+      # on-demand activity tracker.
+      - nginx-activity:/var/log/nginx-activity:ro
     depends_on:
       beachhead-db:
         condition: service_healthy
@@ -65,6 +68,13 @@ services:
       - certs:/etc/nginx/certs
       - ./nginx/vhost.d:/etc/nginx/vhost.d
       - html:/usr/share/nginx/html
+      # Drop a second access_log into nginx-proxy's http{} so the Beachhead
+      # activity tracker can detect inbound traffic per host. Read-only —
+      # nginx-proxy only includes it; Beachhead never writes to this conf.
+      - ./nginx/activity-log.conf:/etc/nginx/conf.d/beachhead-activity.conf:ro
+      # The log itself goes here — read-write for nginx-proxy, read-only
+      # for beachhead-api (mounted above).
+      - nginx-activity:/var/log/nginx-activity
     networks:
       - beachhead-net
 
@@ -91,6 +101,7 @@ volumes:
   certs:
   html:
   acme:
+  nginx-activity:
 
 networks:
   beachhead-net:

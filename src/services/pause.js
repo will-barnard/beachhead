@@ -25,6 +25,21 @@ function pauseConfigPath(appId) {
   return path.join(config.deploy.baseDir, `app-${appId}`, 'pause-config.conf');
 }
 
+/**
+ * Container name and on-disk config path for an auto-pause (on-demand)
+ * placeholder. Keyed by service so multi-endpoint apps can have one
+ * placeholder per paused public service.
+ */
+function autoPauseContainerName(appId, service) {
+  const safe = String(service || 'public').replace(/[^a-zA-Z0-9-]/g, '-');
+  return `beachhead-autopause-${appId}-${safe}`;
+}
+
+function autoPauseConfigPath(appId, service) {
+  const safe = String(service || 'public').replace(/[^a-zA-Z0-9-]/g, '-');
+  return path.join(config.deploy.baseDir, `app-${appId}`, `autopause-${safe}.conf`);
+}
+
 function escapeForNginxString(str) {
   // Inside nginx single-quoted strings, only backslash and single-quote need escaping.
   return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -121,10 +136,180 @@ async function stopPausePlaceholder(appId) {
   }
 }
 
+/**
+ * Generate the nginx config for an auto-pause (on-demand) placeholder.
+ *
+ * The placeholder serves an HTML page that pings Beachhead's wake endpoint.
+ * It also exposes `/__bh_wake__` and `/__bh_status__` as same-origin proxies
+ * to the Beachhead API so the page doesn't need CORS to call across the
+ * dashboard's domain.
+ */
+function generateAutoPauseConfig({ appId, customHtml, idleSeconds }) {
+  // The HTML is rendered into the nginx config as a single-quoted string.
+  // We escape backslashes and single quotes for nginx, then use the literal
+  // value in `return 200`.
+  const html = (customHtml && String(customHtml).trim()) || defaultWakeHtml(idleSeconds);
+  const escapedHtml = String(html)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'");
+
+  return `server {
+  listen 80 default_server;
+  server_name _;
+
+  # Wake endpoint — same-origin proxy into Beachhead's API.
+  # Held open until the app is healthy (or the upstream times out),
+  # so the client can simply reload on a 200 response.
+  location = /__bh_wake__ {
+    proxy_pass http://beachhead-api:3000/api/wake/${appId};
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_read_timeout 120s;
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 10s;
+  }
+
+  location = /__bh_status__ {
+    proxy_pass http://beachhead-api:3000/api/wake/${appId}/status;
+    proxy_set_header Host $host;
+  }
+
+  # Wake page: same content for every path so a curl/wget user also sees
+  # something useful instead of a 404.
+  location / {
+    default_type text/html;
+    add_header Cache-Control "no-store" always;
+    return 200 '${escapedHtml}';
+  }
+}
+`;
+}
+
+function defaultWakeHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Waking up&hellip;</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; color: #333; background: #fafafa; display: grid; place-items: center; }
+  .card { max-width: 28rem; padding: 2rem; text-align: center; }
+  h1 { margin: 0 0 .25rem; font-size: 1.4rem; font-weight: 600; }
+  p { margin: 0; color: #666; }
+  .spinner { width: 32px; height: 32px; border: 3px solid #e0e0e0; border-top-color: #555; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 1.25rem; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .err { color: #b00; margin-top: .75rem; font-size: .9rem; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner"></div>
+    <h1>Waking up&hellip;</h1>
+    <p>This site sleeps when idle. It will be ready in a few seconds.</p>
+    <p class="err" id="err" hidden></p>
+  </div>
+<script>
+(function () {
+  var err = document.getElementById("err");
+  function showError(msg) { err.textContent = msg; err.hidden = false; }
+  fetch("/__bh_wake__", { method: "POST", cache: "no-store" })
+    .then(function (r) {
+      if (r.ok) { window.location.reload(); }
+      else { showError("Wake failed (" + r.status + "). Retrying in 5s\\u2026"); setTimeout(function(){ window.location.reload(); }, 5000); }
+    })
+    .catch(function (e) {
+      showError("Wake error: " + e.message + ". Retrying in 5s\\u2026");
+      setTimeout(function(){ window.location.reload(); }, 5000);
+    });
+})();
+</script>
+</body>
+</html>`;
+}
+
+/**
+ * Start an auto-pause placeholder for a single (app, service) pair.
+ * The placeholder serves the given domain via nginx-proxy and renders the
+ * wake page. Container is reused (re-created in place) if it already exists.
+ */
+async function startAutoPausePlaceholder({ app, service, domain, customHtml }) {
+  const appDir = path.join(config.deploy.baseDir, `app-${app.id}`);
+  fs.mkdirSync(appDir, { recursive: true });
+
+  const configPath = autoPauseConfigPath(app.id, service);
+  const conf = generateAutoPauseConfig({
+    appId: app.id,
+    customHtml: customHtml || app.wake_page_html,
+    idleSeconds: app.idle_timeout_seconds,
+  });
+  fs.writeFileSync(configPath, conf, 'utf8');
+
+  // Defensive: ensure beachhead-net exists.
+  try {
+    await exec('docker', ['network', 'inspect', config.deploy.dockerNetwork], { timeout: 10000, silent: true });
+  } catch {
+    await exec('docker', ['network', 'create', config.deploy.dockerNetwork], { timeout: 10000 });
+  }
+
+  const name = autoPauseContainerName(app.id, service);
+  // Recreate so config edits take effect immediately.
+  try { await exec('docker', ['rm', '-f', name], { timeout: 15000, silent: true }); } catch {}
+
+  await exec('docker', [
+    'run', '-d',
+    '--name', name,
+    '--network', config.deploy.dockerNetwork,
+    '--restart', 'unless-stopped',
+    '-e', `VIRTUAL_HOST=${domain}`,
+    '-e', 'VIRTUAL_PORT=80',
+    '-e', `LETSENCRYPT_HOST=${domain}`,
+    '-v', `${configPath}:/etc/nginx/conf.d/default.conf:ro`,
+    '-l', `beachhead.app=${app.id}`,
+    '-l', `beachhead.service=${service}`,
+    '-l', 'beachhead.role=auto-pause-placeholder',
+    'nginx:alpine',
+  ], { timeout: 60000 });
+
+  logger.info(`Auto-pause placeholder up: app=${app.name} service=${service} domain=${domain}`);
+  return name;
+}
+
+/**
+ * Stop and remove every auto-pause placeholder for an app.
+ * Best-effort — never throws. Matches by label so we don't have to remember
+ * which services were placeholdered.
+ */
+async function stopAutoPausePlaceholders(appId) {
+  try {
+    const { stdout } = await exec('docker', [
+      'ps', '-a',
+      '--filter', `label=beachhead.app=${appId}`,
+      '--filter', 'label=beachhead.role=auto-pause-placeholder',
+      '--format', '{{.Names}}',
+    ], { timeout: 10000, silent: true });
+    const names = stdout.trim().split('\n').filter(Boolean);
+    for (const n of names) {
+      try { await exec('docker', ['rm', '-f', n], { timeout: 15000, silent: true }); } catch {}
+    }
+    if (names.length > 0) {
+      logger.info(`Removed ${names.length} auto-pause placeholder(s) for app ${appId}`);
+    }
+  } catch (err) {
+    logger.warn(`stopAutoPausePlaceholders(${appId}): ${err.message}`);
+  }
+}
+
 module.exports = {
   pauseContainerName,
+  autoPauseContainerName,
   generatePauseConfig,
+  generateAutoPauseConfig,
+  defaultWakeHtml,
   startPausePlaceholder,
   stopPausePlaceholder,
+  startAutoPausePlaceholder,
+  stopAutoPausePlaceholders,
   isContainerRunning,
 };
