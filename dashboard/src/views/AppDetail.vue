@@ -174,6 +174,126 @@
       </div>
     </div>
 
+    <!-- On-Demand (scale-to-zero) -->
+    <div v-if="!app.system_app" class="card">
+      <h3 style="margin-bottom:0.75rem;">
+        On-Demand
+        <span v-if="onDemand?.on_demand && onDemand?.auto_paused" class="badge badge-warning" style="margin-left:0.5rem; font-size:0.65rem;">Auto-paused</span>
+        <span v-else-if="onDemand?.on_demand" class="badge badge-success" style="margin-left:0.5rem; font-size:0.65rem;">Enabled</span>
+      </h3>
+      <p style="color:var(--muted); font-size:0.85rem; margin-bottom:0.75rem;">
+        When enabled, this app pauses itself after a period of inactivity and auto-wakes
+        on the next request. Perfect for low-traffic apps that don't need to consume
+        resources 24/7. Browser visitors see a brief "waking up" page (5–15 s typical).
+        API/CLI traffic gets the wake page HTML — keep services that handle webhooks or
+        machine clients in <strong>always-on</strong> below.
+      </p>
+
+      <div v-if="onDemand">
+        <!-- Toggle -->
+        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:1rem;">
+          <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer;">
+            <input
+              type="checkbox"
+              v-model="onDemandForm.on_demand"
+              :disabled="savingOnDemand"
+            />
+            <strong>Enable on-demand mode</strong>
+          </label>
+        </div>
+
+        <!-- Status -->
+        <div v-if="onDemand.on_demand" style="font-size:0.85rem; color:var(--muted); margin-bottom:0.75rem;">
+          <div>
+            <strong>Status:</strong>
+            <span v-if="onDemand.auto_paused">Sleeping (auto-paused)</span>
+            <span v-else>Awake</span>
+          </div>
+          <div v-if="onDemand.last_active_at">
+            <strong>Last active:</strong> {{ formatDate(onDemand.last_active_at) }}
+          </div>
+        </div>
+
+        <!-- Idle timeout -->
+        <div class="form-group" style="margin-bottom:0.75rem;">
+          <label style="font-size:0.8rem; color:var(--muted);">
+            Idle timeout (minutes) — pauses after this many minutes with no incoming traffic
+          </label>
+          <input
+            v-model.number="onDemandForm.idle_timeout_minutes"
+            type="number"
+            min="1"
+            max="1440"
+            :disabled="savingOnDemand || !onDemandForm.on_demand"
+            style="width:8rem;"
+          />
+        </div>
+
+        <!-- Always-on services -->
+        <div class="form-group" style="margin-bottom:0.75rem;">
+          <label style="font-size:0.8rem; color:var(--muted); display:block; margin-bottom:0.35rem;">
+            Always-on services — these won't pause (use for services that handle webhooks,
+            background jobs, or have slow startup)
+          </label>
+          <div v-if="onDemand.services.length === 0" style="font-size:0.8rem; color:var(--muted); font-style:italic;">
+            No services discovered yet — deploy this app first.
+          </div>
+          <div v-else style="display:flex; flex-wrap:wrap; gap:0.5rem;">
+            <label
+              v-for="svc in onDemand.services"
+              :key="svc"
+              style="display:inline-flex; align-items:center; gap:0.35rem; padding:0.25rem 0.6rem; background:var(--surface); border:1px solid var(--border); border-radius:4px; font-size:0.85rem; cursor:pointer;"
+            >
+              <input
+                type="checkbox"
+                :value="svc"
+                v-model="onDemandForm.always_on_services"
+                :disabled="savingOnDemand || !onDemandForm.on_demand"
+              />
+              <code style="font-size:0.85rem;">{{ svc }}</code>
+            </label>
+          </div>
+        </div>
+
+        <!-- Custom wake page HTML -->
+        <div class="form-group" style="margin-bottom:0.75rem;">
+          <label style="font-size:0.8rem; color:var(--muted); display:flex; align-items:center; gap:0.5rem;">
+            <span>Custom wake page HTML (optional)</span>
+            <button
+              type="button"
+              class="btn btn-sm"
+              style="padding:0.1rem 0.5rem; font-size:0.75rem;"
+              @click="showWakeHtml = !showWakeHtml"
+            >{{ showWakeHtml ? 'Hide' : (onDemandForm.wake_page_html ? 'Edit' : 'Add') }}</button>
+          </label>
+          <textarea
+            v-if="showWakeHtml"
+            v-model="onDemandForm.wake_page_html"
+            placeholder="Leave blank to use the default page. The placeholder JS that calls /__bh_wake__ is appended automatically."
+            :disabled="savingOnDemand || !onDemandForm.on_demand"
+            rows="6"
+            style="width:100%; font-family:monospace; font-size:0.8rem; margin-top:0.35rem;"
+          ></textarea>
+        </div>
+
+        <!-- Buttons -->
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+          <button class="btn" @click="saveOnDemand" :disabled="savingOnDemand || !onDemandDirty">
+            {{ savingOnDemand ? 'Saving…' : 'Save' }}
+          </button>
+          <button
+            v-if="onDemand.on_demand && !onDemand.auto_paused && !app.paused"
+            class="btn btn-warning"
+            @click="triggerAutoPauseNow"
+            :disabled="autoPausing"
+          >
+            {{ autoPausing ? 'Pausing…' : 'Pause Now' }}
+          </button>
+        </div>
+      </div>
+      <div v-else style="color:var(--muted); font-size:0.85rem;">Loading on-demand config…</div>
+    </div>
+
     <!-- Staging URL -->
     <div class="card">
       <h3 style="margin-bottom:0.75rem;">
@@ -418,7 +538,33 @@ export default {
     stagingForm: { subdomain: '' },
     settingStaging: false,
     stagingMode: null,
+    onDemand: null,
+    onDemandForm: {
+      on_demand: false,
+      idle_timeout_minutes: 30,
+      always_on_services: [],
+      wake_page_html: '',
+    },
+    savingOnDemand: false,
+    autoPausing: false,
+    showWakeHtml: false,
   }),
+  computed: {
+    onDemandDirty() {
+      if (!this.onDemand) return false;
+      const f = this.onDemandForm;
+      const o = this.onDemand;
+      const minutes = Math.round((o.idle_timeout_seconds || 1800) / 60);
+      const currentSorted = [...(o.always_on_services || [])].sort().join(',');
+      const formSorted = [...(f.always_on_services || [])].sort().join(',');
+      return (
+        Boolean(f.on_demand) !== Boolean(o.on_demand) ||
+        Number(f.idle_timeout_minutes) !== minutes ||
+        formSorted !== currentSorted ||
+        (f.wake_page_html || '') !== (o.wake_page_html || '')
+      );
+    },
+  },
   async created() {
     await this.load();
   },
@@ -439,6 +585,22 @@ export default {
         this.envFiles = envFiles;
         this.endpoints = endpoints;
         this.stagingForm.subdomain = app.staging_subdomain || '';
+        if (!app.system_app) {
+          try {
+            const od = await api.getOnDemand(id);
+            this.onDemand = od;
+            this.onDemandForm = {
+              on_demand: !!od.on_demand,
+              idle_timeout_minutes: Math.round((od.idle_timeout_seconds || 1800) / 60),
+              always_on_services: [...(od.always_on_services || [])],
+              wake_page_html: od.wake_page_html || '',
+            };
+            this.showWakeHtml = !!od.wake_page_html;
+          } catch (e) {
+            // non-fatal — leave the section in a loading state
+            console.warn('Could not load on-demand config:', e.message);
+          }
+        }
         try {
           const settings = await api.getSettings();
           this.stagingRootDomain = settings.staging_root_domain || '';
@@ -701,6 +863,44 @@ export default {
         this.unpausing = false;
         this.unpauseMode = null;
       }
+    },
+    async saveOnDemand() {
+      this.savingOnDemand = true;
+      try {
+        const minutes = Number(this.onDemandForm.idle_timeout_minutes);
+        if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) {
+          alert('Idle timeout must be between 1 and 1440 minutes.');
+          return;
+        }
+        const body = {
+          on_demand: !!this.onDemandForm.on_demand,
+          idle_timeout_seconds: Math.round(minutes * 60),
+          always_on_services: this.onDemandForm.always_on_services || [],
+          wake_page_html: this.onDemandForm.wake_page_html || null,
+        };
+        await api.updateOnDemand(this.app.id, body);
+        await this.load();
+      } catch (e) {
+        alert('Failed to save on-demand config: ' + e.message);
+      } finally {
+        this.savingOnDemand = false;
+      }
+    },
+    async triggerAutoPauseNow() {
+      if (!confirm(`Pause ${this.app.name} now? It will wake on the next request.`)) return;
+      this.autoPausing = true;
+      try {
+        await api.triggerAutoPause(this.app.id);
+        await this.load();
+      } catch (e) {
+        alert('Auto-pause failed: ' + e.message);
+      } finally {
+        this.autoPausing = false;
+      }
+    },
+    formatDate(s) {
+      if (!s) return '';
+      try { return new Date(s).toLocaleString(); } catch { return String(s); }
     },
     async saveStaging() {
       const sub = (this.stagingForm.subdomain || '').trim().toLowerCase();
