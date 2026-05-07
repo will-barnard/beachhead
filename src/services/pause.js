@@ -153,25 +153,45 @@ function generateAutoPauseConfig({ appId, customHtml, idleSeconds }) {
     .replace(/\\/g, '\\\\')
     .replace(/'/g, "\\'");
 
+  // Resolution-at-request-time: without this nginx tries to resolve
+  // `beachhead-api` at config load and crashes if the lookup fails for any
+  // reason (e.g. the API restarted just before the placeholder did). Using
+  // Docker's embedded DNS (127.0.0.11) plus a variable for proxy_pass
+  // defers DNS to request time, so transient resolution failures only fail
+  // the wake fetch — they don't take down the whole placeholder.
   return `server {
   listen 80 default_server;
   server_name _;
+
+  resolver 127.0.0.11 valid=30s ipv6=off;
+  set $bh_api http://beachhead-api:3000;
 
   # Wake endpoint — same-origin proxy into Beachhead's API.
   # Held open until the app is healthy (or the upstream times out),
   # so the client can simply reload on a 200 response.
   location = /__bh_wake__ {
-    proxy_pass http://beachhead-api:3000/api/wake/${appId};
+    proxy_pass $bh_api/api/wake/${appId};
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_read_timeout 120s;
     proxy_connect_timeout 5s;
     proxy_send_timeout 10s;
+    # If the API is briefly unreachable, fall through to a JSON-shaped
+    # 502 so the wake page's retry loop has something to work with.
+    proxy_intercept_errors on;
+    error_page 502 503 504 = @wake_unreachable;
   }
 
   location = /__bh_status__ {
-    proxy_pass http://beachhead-api:3000/api/wake/${appId}/status;
+    proxy_pass $bh_api/api/wake/${appId}/status;
     proxy_set_header Host $host;
+    proxy_intercept_errors on;
+    error_page 502 503 504 = @wake_unreachable;
+  }
+
+  location @wake_unreachable {
+    default_type application/json;
+    return 502 '{"error":"beachhead api unreachable"}';
   }
 
   # Wake page: same content for every path so a curl/wget user also sees
