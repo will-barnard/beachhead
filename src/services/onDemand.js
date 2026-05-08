@@ -47,20 +47,37 @@ function planPause({ deployDir, app, bhConfig }) {
 }
 
 /**
- * Map each public-facing service (primary + endpoints) → its full list of
- * hostnames, matching what the override generator passed to nginx-proxy
- * when the live app was running.
+ * Group every public-facing host by the compose service that serves it,
+ * matching the merge composeWrapper#generateOverride does for the live
+ * app. Returns one entry per service, with the full host list it claims.
  *
- * Returning the FULL host list (primary + optional www mirror + optional
- * staging host) is what makes the placeholder cert-safe: acme-companion
- * compares the placeholder's `LETSENCRYPT_HOST` against the existing cert's
- * SANs and, if they match, leaves the cert alone. If the lists differ it
- * will try to re-provision — and during that gap nginx-proxy falls back to
- * its built-in self-signed cert, which HSTS-pinned browsers refuse with
- * "certificate invalid".
+ * Why grouping matters:
+ *   - Multiple endpoint rows can point at the same compose service
+ *     (e.g. an `nginx` static-frontend that serves `admin.example.com`,
+ *     `studio.example.com`, AND the bare apex). The live container has a
+ *     single comma-separated `VIRTUAL_HOST`/`LETSENCRYPT_HOST` covering
+ *     all of them.
+ *   - If we make a SEPARATE placeholder per host they all collide on the
+ *     same container name (`beachhead-autopause-{appId}-{service}`) — the
+ *     last one wins, the others vanish, and the missing hosts return 503
+ *     from nginx-proxy.
+ *   - If the placeholder's host list doesn't match the live app's,
+ *     acme-companion re-bookkeeps the cert under a new primary name,
+ *     orphaning the existing cert symlinks and causing HSTS / cert
+ *     errors on the dropped hosts.
+ *
+ * Order matches the override generator: app.domain → optional www mirror →
+ * optional staging host → endpoints in DB order (with their own www
+ * mirror if `www_redirect` is set on the endpoint).
  */
 async function publicServiceDomains({ app, bhConfig }) {
-  const out = [];
+  const byService = new Map();
+  const addHost = (service, host) => {
+    if (!service || !host) return;
+    if (!byService.has(service)) byService.set(service, []);
+    const list = byService.get(service);
+    if (!list.includes(host)) list.push(host);
+  };
 
   // Optional staging host (same logic as composeWrapper#generateOverride).
   let stagingHost = null;
@@ -71,24 +88,25 @@ async function publicServiceDomains({ app, bhConfig }) {
     } catch { /* non-fatal */ }
   }
 
-  // Primary public service.
+  // Primary public service first — its app.domain leads the host list so
+  // acme-companion treats it as the cert's primary name (matching the
+  // live override).
   const primary = bhConfig?.public_service || app.public_service;
   if (primary) {
-    const hosts = [app.domain];
-    if (app.www_redirect) hosts.push(`www.${app.domain}`);
-    if (stagingHost && !hosts.includes(stagingHost)) hosts.push(stagingHost);
-    out.push({ service: primary, hosts });
+    addHost(primary, app.domain);
+    if (app.www_redirect) addHost(primary, `www.${app.domain}`);
+    if (stagingHost) addHost(primary, stagingHost);
   }
 
-  // Additional endpoints.
+  // Additional endpoints — appended to the same service if it already
+  // exists, otherwise a new entry.
   const endpoints = await AppEndpoints.findByAppId(app.id);
   for (const ep of endpoints) {
-    const hosts = [ep.domain];
-    if (ep.www_redirect) hosts.push(`www.${ep.domain}`);
-    out.push({ service: ep.service, hosts });
+    addHost(ep.service, ep.domain);
+    if (ep.www_redirect) addHost(ep.service, `www.${ep.domain}`);
   }
 
-  return out;
+  return Array.from(byService, ([service, hosts]) => ({ service, hosts }));
 }
 
 function slugify(name) {
