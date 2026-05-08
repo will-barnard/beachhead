@@ -262,6 +262,15 @@ function defaultWakeHtml() {
   var QUIET_MS = 20000;
   var POST_RETRY_MS = 500;
   var PROBE_MS = 500;
+  // Reload only after this many CONSECUTIVE probes return without the
+  // placeholder marker. nginx-proxy round-robins between the placeholder
+  // and the just-up live app for the ~1–2s window before the placeholder
+  // is fully retired from the upstream pool — a single "no marker" probe
+  // can land on the live app while the placeholder is still active, and
+  // a reload at that moment can land us right back on the placeholder
+  // (= flicker). With strict per-request round-robin, three consecutive
+  // "no marker" responses is only possible once the placeholder is gone.
+  var CONFIRM_LIVE = 3;
 
   var err = document.getElementById("err");
   var h1 = document.querySelector("h1");
@@ -285,18 +294,24 @@ function defaultWakeHtml() {
     probe();
   }
 
+  var liveStreak = 0;
   function probe() {
     fetch("/", { method: "HEAD", cache: "no-store" })
       .then(function (r) {
         // r.headers.get returns null when the header is absent.
         var stillPaused = r.headers.get("X-Beachhead-Pause") !== null;
         if (!stillPaused && r.status < 500) {
-          window.location.reload();
-          return;
+          liveStreak++;
+          if (liveStreak >= CONFIRM_LIVE) {
+            window.location.reload();
+            return;
+          }
+        } else {
+          liveStreak = 0;
         }
         setTimeout(probe, PROBE_MS);
       })
-      .catch(function () { setTimeout(probe, PROBE_MS); });
+      .catch(function () { liveStreak = 0; setTimeout(probe, PROBE_MS); });
   }
 
   // ── Phase 1 — kick off wake ──
