@@ -311,9 +311,24 @@ async function autoWake(app) {
     throw new Error(`Health check failed for ${fresh.domain} after wake`);
   }
 
-  // App is healthy — tear down placeholders and clear flag.
-  await stopAutoPausePlaceholders(fresh.id);
+  // App is healthy — clear the auto_paused flag immediately so any
+  // concurrent wake polls return early.
   await Apps.update(fresh.id, { auto_paused: false, last_active_at: new Date() });
+
+  // Defer placeholder teardown. The wake-endpoint response is still in
+  // flight back through the placeholder when we return; killing it
+  // synchronously would break that connection mid-response, nginx-proxy
+  // would convert that to a 502 to the browser, and the wake page's
+  // retry would then hit the live app (which knows nothing about
+  // /__bh_wake__) and get a 405. The wake-page client probes for the
+  // placeholder going away independently via the X-Beachhead-Pause
+  // marker, so a small server-side delay before teardown is enough to
+  // let the wake response complete cleanly.
+  setTimeout(() => {
+    stopAutoPausePlaceholders(fresh.id).catch(err =>
+      logger.warn(`onDemand.autoWake placeholder cleanup for ${fresh.name}: ${err.message}`)
+    );
+  }, 2000);
 
   logger.info(`App ${fresh.name} woken from auto-pause`);
   return { woken: true };

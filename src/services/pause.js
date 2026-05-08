@@ -159,6 +159,13 @@ function generateAutoPauseConfig({ appId, customHtml, idleSeconds }) {
   // Docker's embedded DNS (127.0.0.11) plus a variable for proxy_pass
   // defers DNS to request time, so transient resolution failures only fail
   // the wake fetch — they don't take down the whole placeholder.
+  // Marker header added to every placeholder response. The wake page
+  // polls `HEAD /` after kicking off wake, and reloads as soon as it
+  // sees a response WITHOUT this header — i.e. the live app is now
+  // answering. This is robust against the brief window where both the
+  // placeholder and the just-revived live app are registered with
+  // nginx-proxy: as soon as a single probe lands on the live app, we
+  // reload, no flicker.
   return `server {
   listen 80 default_server;
   server_name _;
@@ -180,6 +187,7 @@ function generateAutoPauseConfig({ appId, customHtml, idleSeconds }) {
     # 502 so the wake page's retry loop has something to work with.
     proxy_intercept_errors on;
     error_page 502 503 504 = @wake_unreachable;
+    add_header X-Beachhead-Pause "1" always;
   }
 
   location = /__bh_status__ {
@@ -187,10 +195,12 @@ function generateAutoPauseConfig({ appId, customHtml, idleSeconds }) {
     proxy_set_header Host $host;
     proxy_intercept_errors on;
     error_page 502 503 504 = @wake_unreachable;
+    add_header X-Beachhead-Pause "1" always;
   }
 
   location @wake_unreachable {
     default_type application/json;
+    add_header X-Beachhead-Pause "1" always;
     return 502 '{"error":"beachhead api unreachable"}';
   }
 
@@ -199,6 +209,7 @@ function generateAutoPauseConfig({ appId, customHtml, idleSeconds }) {
   location / {
     default_type text/html;
     add_header Cache-Control "no-store" always;
+    add_header X-Beachhead-Pause "1" always;
     return 200 '${escapedHtml}';
   }
 }
@@ -232,35 +243,79 @@ function defaultWakeHtml() {
   </div>
 <script>
 (function () {
-  // Wake-page retry policy:
-  //   - Always retry until success — transient 502s right at the start are
-  //     normal (nginx-proxy hasn't routed yet, beachhead-api one tick behind).
-  //   - Retry quickly so a real wake feels instant: 500 ms between attempts.
-  //   - Stay quiet for the first ~20 s so a normal cold start (which is
-  //     usually well under that) never shows a user-facing error.
-  //   - Only after that do we surface what's going wrong, and we keep
-  //     retrying — the user can leave the tab open and recover automatically.
+  // Two-phase wake-page client:
+  //
+  //   PHASE 1: kick off wake.
+  //     POST /__bh_wake__ — held open by the placeholder until beachhead-api
+  //     reports the app healthy. On any response that means "the live app
+  //     handled this" (200 from wake, or a 4xx because the placeholder is
+  //     gone and we're hitting the live app's frontend), switch to phase 2.
+  //     Transient 5xx / network errors are silently retried for the first
+  //     ~20s; only after that do we surface a user-visible error, and we
+  //     keep trying so the user can leave the tab open.
+  //
+  //   PHASE 2: probe HEAD / for absence of the X-Beachhead-Pause marker.
+  //     The placeholder stamps that header on every response. As soon as
+  //     a single probe lands on the live app (no marker), reload. This is
+  //     robust through the brief window where both the placeholder and
+  //     the just-revived live app are registered with nginx-proxy.
   var QUIET_MS = 20000;
-  var RETRY_MS = 500;
+  var POST_RETRY_MS = 500;
+  var PROBE_MS = 500;
 
   var err = document.getElementById("err");
+  var h1 = document.querySelector("h1");
   var startedAt = Date.now();
+
   function maybeShowError(msg) {
     if (Date.now() - startedAt < QUIET_MS) return;
     err.textContent = msg + " \\u2014 still trying\\u2026";
     err.hidden = false;
   }
 
+  function clearError() { err.hidden = true; }
+
+  // ── Phase 2 — probe the live app ──
+  var probing = false;
+  function startProbing() {
+    if (probing) return;
+    probing = true;
+    clearError();
+    if (h1) h1.textContent = "Almost ready\\u2026";
+    probe();
+  }
+
+  function probe() {
+    fetch("/", { method: "HEAD", cache: "no-store" })
+      .then(function (r) {
+        // r.headers.get returns null when the header is absent.
+        var stillPaused = r.headers.get("X-Beachhead-Pause") !== null;
+        if (!stillPaused && r.status < 500) {
+          window.location.reload();
+          return;
+        }
+        setTimeout(probe, PROBE_MS);
+      })
+      .catch(function () { setTimeout(probe, PROBE_MS); });
+  }
+
+  // ── Phase 1 — kick off wake ──
   function attempt() {
     fetch("/__bh_wake__", { method: "POST", cache: "no-store" })
       .then(function (r) {
-        if (r.ok) { window.location.reload(); return; }
+        // 200 from wake: app is up. 404/405 from the live app's frontend:
+        // placeholder is gone and the request reached the real app.
+        // Either way, switch to the probe loop.
+        if (r.ok || r.status === 404 || r.status === 405) {
+          startProbing();
+          return;
+        }
         maybeShowError("Wake returned " + r.status);
-        setTimeout(attempt, RETRY_MS);
+        setTimeout(attempt, POST_RETRY_MS);
       })
       .catch(function (e) {
         maybeShowError("Wake error: " + ((e && e.message) || e));
-        setTimeout(attempt, RETRY_MS);
+        setTimeout(attempt, POST_RETRY_MS);
       });
   }
 
