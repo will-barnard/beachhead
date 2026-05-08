@@ -144,28 +144,28 @@ async function stopPausePlaceholder(appId) {
  * to the Beachhead API so the page doesn't need CORS to call across the
  * dashboard's domain.
  */
-function generateAutoPauseConfig({ appId, customHtml, idleSeconds }) {
-  // The HTML is rendered into the nginx config as a single-quoted string.
-  // We escape backslashes and single quotes for nginx, then use the literal
-  // value in `return 200`.
-  const html = (customHtml && String(customHtml).trim()) || defaultWakeHtml(idleSeconds);
-  const escapedHtml = String(html)
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'");
-
-  // Resolution-at-request-time: without this nginx tries to resolve
-  // `beachhead-api` at config load and crashes if the lookup fails for any
-  // reason (e.g. the API restarted just before the placeholder did). Using
-  // Docker's embedded DNS (127.0.0.11) plus a variable for proxy_pass
-  // defers DNS to request time, so transient resolution failures only fail
-  // the wake fetch — they don't take down the whole placeholder.
-  // Marker header added to every placeholder response. The wake page
-  // polls `HEAD /` after kicking off wake, and reloads as soon as it
-  // sees a response WITHOUT this header — i.e. the live app is now
-  // answering. This is robust against the brief window where both the
-  // placeholder and the just-revived live app are registered with
-  // nginx-proxy: as soon as a single probe lands on the live app, we
-  // reload, no flicker.
+function generateAutoPauseConfig({ appId }) {
+  // The wake HTML lives in a separate file mounted into the placeholder
+  // container at /etc/nginx/wake/index.html — see startAutoPausePlaceholder.
+  // We don't try to inline the HTML into a `return 200 '...'` directive
+  // because nginx single-quoted strings don't support `\'` to embed an
+  // apostrophe, and the default wake page contains a few in its JS
+  // comments. File-mount also lets users supply arbitrarily complex
+  // `wake_page_html` without us having to escape every nginx
+  // string-meta-character by hand.
+  //
+  // Resolution-at-request-time: without `resolver` + a variable, nginx
+  // resolves `beachhead-api` at config load and crashes if the lookup
+  // ever fails. The embedded Docker DNS at 127.0.0.11 plus a `set` /
+  // variable upstream defers DNS to request time so transient API
+  // restarts only fail the wake fetch — they don't take down the
+  // whole placeholder.
+  //
+  // Marker header `X-Beachhead-Pause: 1` is stamped on every response.
+  // The wake page polls `HEAD /` after kicking off wake and reloads as
+  // soon as it sees a response WITHOUT this header — robust against
+  // nginx-proxy's round-robin during the brief window when both the
+  // placeholder and the just-revived live app are registered.
   return `server {
   listen 80 default_server;
   server_name _;
@@ -183,8 +183,6 @@ function generateAutoPauseConfig({ appId, customHtml, idleSeconds }) {
     proxy_read_timeout 120s;
     proxy_connect_timeout 5s;
     proxy_send_timeout 10s;
-    # If the API is briefly unreachable, fall through to a JSON-shaped
-    # 502 so the wake page's retry loop has something to work with.
     proxy_intercept_errors on;
     error_page 502 503 504 = @wake_unreachable;
     add_header X-Beachhead-Pause "1" always;
@@ -204,13 +202,14 @@ function generateAutoPauseConfig({ appId, customHtml, idleSeconds }) {
     return 502 '{"error":"beachhead api unreachable"}';
   }
 
-  # Wake page: same content for every path so a curl/wget user also sees
-  # something useful instead of a 404.
+  # Wake page — every path serves /index.html from the mounted volume so
+  # curl/wget visitors and arbitrary client paths all see the wake screen.
   location / {
     default_type text/html;
     add_header Cache-Control "no-store" always;
     add_header X-Beachhead-Pause "1" always;
-    return 200 '${escapedHtml}';
+    root /etc/nginx/wake;
+    try_files /index.html =500;
   }
 }
 `;
@@ -367,13 +366,20 @@ async function startAutoPausePlaceholder({ app, service, hosts, domain, customHt
   const appDir = path.join(config.deploy.baseDir, `app-${app.id}`);
   fs.mkdirSync(appDir, { recursive: true });
 
+  const safe = String(service || 'public').replace(/[^a-zA-Z0-9-]/g, '-');
+
+  // Wake HTML lives in its own directory because nginx is configured to
+  // serve from a directory root via `try_files /index.html`. We mount the
+  // directory (not just the file) so anything inside is reachable to nginx.
+  const wakeDir = path.join(appDir, `autopause-${safe}-wake`);
+  fs.mkdirSync(wakeDir, { recursive: true });
+  const wakeHtml = (customHtml && String(customHtml).trim())
+    || (app.wake_page_html && String(app.wake_page_html).trim())
+    || defaultWakeHtml();
+  fs.writeFileSync(path.join(wakeDir, 'index.html'), wakeHtml, 'utf8');
+
   const configPath = autoPauseConfigPath(app.id, service);
-  const conf = generateAutoPauseConfig({
-    appId: app.id,
-    customHtml: customHtml || app.wake_page_html,
-    idleSeconds: app.idle_timeout_seconds,
-  });
-  fs.writeFileSync(configPath, conf, 'utf8');
+  fs.writeFileSync(configPath, generateAutoPauseConfig({ appId: app.id }), 'utf8');
 
   // Defensive: ensure beachhead-net exists.
   try {
@@ -395,6 +401,7 @@ async function startAutoPausePlaceholder({ app, service, hosts, domain, customHt
     '-e', 'VIRTUAL_PORT=80',
     '-e', `LETSENCRYPT_HOST=${hostsCsv}`,
     '-v', `${configPath}:/etc/nginx/conf.d/default.conf:ro`,
+    '-v', `${wakeDir}:/etc/nginx/wake:ro`,
     '-l', `beachhead.app=${app.id}`,
     '-l', `beachhead.service=${service}`,
     '-l', 'beachhead.role=auto-pause-placeholder',
