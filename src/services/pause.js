@@ -251,10 +251,27 @@ function defaultWakeHtml() {
 
 /**
  * Start an auto-pause placeholder for a single (app, service) pair.
- * The placeholder serves the given domain via nginx-proxy and renders the
- * wake page. Container is reused (re-created in place) if it already exists.
+ * The placeholder serves the given hostnames via nginx-proxy and renders
+ * the wake page.
+ *
+ * `hosts` MUST contain every hostname the live app was claiming (primary +
+ * www mirror + staging host as appropriate). nginx-proxy and acme-companion
+ * both compare this list against the existing cert's SANs; if it doesn't
+ * match, acme-companion will try to re-provision the cert and during that
+ * gap nginx-proxy serves its built-in self-signed cert — and HSTS-pinned
+ * browsers refuse to load the page with "certificate invalid".
+ *
+ * Accepts either `hosts` (preferred, array) or legacy `domain` (string).
  */
-async function startAutoPausePlaceholder({ app, service, domain, customHtml }) {
+async function startAutoPausePlaceholder({ app, service, hosts, domain, customHtml }) {
+  const hostList = Array.isArray(hosts) && hosts.length > 0
+    ? hosts.filter(Boolean)
+    : (domain ? [domain] : []);
+  if (hostList.length === 0) {
+    throw new Error('startAutoPausePlaceholder: no hostnames provided');
+  }
+  const hostsCsv = hostList.join(',');
+
   const appDir = path.join(config.deploy.baseDir, `app-${app.id}`);
   fs.mkdirSync(appDir, { recursive: true });
 
@@ -282,9 +299,9 @@ async function startAutoPausePlaceholder({ app, service, domain, customHtml }) {
     '--name', name,
     '--network', config.deploy.dockerNetwork,
     '--restart', 'unless-stopped',
-    '-e', `VIRTUAL_HOST=${domain}`,
+    '-e', `VIRTUAL_HOST=${hostsCsv}`,
     '-e', 'VIRTUAL_PORT=80',
-    '-e', `LETSENCRYPT_HOST=${domain}`,
+    '-e', `LETSENCRYPT_HOST=${hostsCsv}`,
     '-v', `${configPath}:/etc/nginx/conf.d/default.conf:ro`,
     '-l', `beachhead.app=${app.id}`,
     '-l', `beachhead.service=${service}`,
@@ -292,7 +309,7 @@ async function startAutoPausePlaceholder({ app, service, domain, customHtml }) {
     'nginx:alpine',
   ], { timeout: 60000 });
 
-  logger.info(`Auto-pause placeholder up: app=${app.name} service=${service} domain=${domain}`);
+  logger.info(`Auto-pause placeholder up: app=${app.name} service=${service} hosts=${hostsCsv}`);
   return name;
 }
 

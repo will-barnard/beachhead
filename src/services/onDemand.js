@@ -8,6 +8,7 @@ const { exec, dockerComposeUpNoBuild, dockerComposeUpStateful, stopComposeProjec
 const { readBeachheadConfig, readAllServiceNames } = require('./composeWrapper');
 const { startAutoPausePlaceholder, stopAutoPausePlaceholders } = require('./pause');
 const { checkHealth } = require('./healthCheck');
+const Settings = require('../models/settings');
 const config = require('../config');
 const logger = require('../logger');
 
@@ -46,17 +47,47 @@ function planPause({ deployDir, app, bhConfig }) {
 }
 
 /**
- * Map each public-facing service (primary + endpoints) → its public domain.
- * Used to figure out which placeholders to start when auto-pausing.
+ * Map each public-facing service (primary + endpoints) → its full list of
+ * hostnames, matching what the override generator passed to nginx-proxy
+ * when the live app was running.
+ *
+ * Returning the FULL host list (primary + optional www mirror + optional
+ * staging host) is what makes the placeholder cert-safe: acme-companion
+ * compares the placeholder's `LETSENCRYPT_HOST` against the existing cert's
+ * SANs and, if they match, leaves the cert alone. If the lists differ it
+ * will try to re-provision — and during that gap nginx-proxy falls back to
+ * its built-in self-signed cert, which HSTS-pinned browsers refuse with
+ * "certificate invalid".
  */
 async function publicServiceDomains({ app, bhConfig }) {
   const out = [];
+
+  // Optional staging host (same logic as composeWrapper#generateOverride).
+  let stagingHost = null;
+  if (app.staging_subdomain) {
+    try {
+      const stagingRoot = await Settings.getStagingRootDomain();
+      if (stagingRoot) stagingHost = `${app.staging_subdomain}.${stagingRoot}`;
+    } catch { /* non-fatal */ }
+  }
+
+  // Primary public service.
   const primary = bhConfig?.public_service || app.public_service;
-  if (primary) out.push({ service: primary, domain: app.domain });
+  if (primary) {
+    const hosts = [app.domain];
+    if (app.www_redirect) hosts.push(`www.${app.domain}`);
+    if (stagingHost && !hosts.includes(stagingHost)) hosts.push(stagingHost);
+    out.push({ service: primary, hosts });
+  }
+
+  // Additional endpoints.
   const endpoints = await AppEndpoints.findByAppId(app.id);
   for (const ep of endpoints) {
-    out.push({ service: ep.service, domain: ep.domain });
+    const hosts = [ep.domain];
+    if (ep.www_redirect) hosts.push(`www.${ep.domain}`);
+    out.push({ service: ep.service, hosts });
   }
+
   return out;
 }
 
@@ -141,9 +172,9 @@ async function autoPause(app) {
     logger.info(`onDemand.autoPause: app ${app.name} has no pause-able public services (all always-on)`);
   } else {
     const startedNames = [];
-    for (const { service, domain } of placeholdersToCreate) {
+    for (const { service, hosts } of placeholdersToCreate) {
       try {
-        const name = await startAutoPausePlaceholder({ app, service, domain });
+        const name = await startAutoPausePlaceholder({ app, service, hosts });
         const alive = await waitUntilRunning(name, 5000);
         if (!alive) {
           // Capture the container's logs so the operator can see WHY it
@@ -157,7 +188,7 @@ async function autoPause(app) {
         }
         startedNames.push(name);
       } catch (err) {
-        logger.error(`onDemand.autoPause: aborting — placeholder for ${service}/${domain} failed: ${err.message}`);
+        logger.error(`onDemand.autoPause: aborting — placeholder for ${service}/${hosts.join(',')} failed: ${err.message}`);
         // Roll back any placeholders we already started so we don't end up
         // double-routing the user's domain to a half-working placeholder.
         await stopAutoPausePlaceholders(app.id);
