@@ -232,17 +232,39 @@ function defaultWakeHtml() {
   </div>
 <script>
 (function () {
+  // Wake-page retry policy:
+  //   - Always retry until success — transient 502s right at the start are
+  //     normal (nginx-proxy hasn't routed yet, beachhead-api one tick behind).
+  //   - Retry quickly so a real wake feels instant: 500 ms between attempts.
+  //   - Stay quiet for the first ~20 s so a normal cold start (which is
+  //     usually well under that) never shows a user-facing error.
+  //   - Only after that do we surface what's going wrong, and we keep
+  //     retrying — the user can leave the tab open and recover automatically.
+  var QUIET_MS = 20000;
+  var RETRY_MS = 500;
+
   var err = document.getElementById("err");
-  function showError(msg) { err.textContent = msg; err.hidden = false; }
-  fetch("/__bh_wake__", { method: "POST", cache: "no-store" })
-    .then(function (r) {
-      if (r.ok) { window.location.reload(); }
-      else { showError("Wake failed (" + r.status + "). Retrying in 5s\\u2026"); setTimeout(function(){ window.location.reload(); }, 5000); }
-    })
-    .catch(function (e) {
-      showError("Wake error: " + e.message + ". Retrying in 5s\\u2026");
-      setTimeout(function(){ window.location.reload(); }, 5000);
-    });
+  var startedAt = Date.now();
+  function maybeShowError(msg) {
+    if (Date.now() - startedAt < QUIET_MS) return;
+    err.textContent = msg + " \\u2014 still trying\\u2026";
+    err.hidden = false;
+  }
+
+  function attempt() {
+    fetch("/__bh_wake__", { method: "POST", cache: "no-store" })
+      .then(function (r) {
+        if (r.ok) { window.location.reload(); return; }
+        maybeShowError("Wake returned " + r.status);
+        setTimeout(attempt, RETRY_MS);
+      })
+      .catch(function (e) {
+        maybeShowError("Wake error: " + ((e && e.message) || e));
+        setTimeout(attempt, RETRY_MS);
+      });
+  }
+
+  attempt();
 })();
 </script>
 </body>
