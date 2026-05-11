@@ -1,7 +1,9 @@
 const { Router, raw: expressRaw } = require('express');
 const crypto = require('crypto');
 const Apps = require('../models/apps');
+const StaticSites = require('../models/staticSites');
 const Deployments = require('../models/deployments');
+const siteRuntime = require('../services/staticSites');
 const config = require('../config');
 const logger = require('../logger');
 
@@ -15,6 +17,19 @@ function verifyGitHubSignature(secret, payload, signature) {
   // timingSafeEqual throws if lengths differ — short-circuit first
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * Try a strict and a `.git`-suffixed lookup against the given finder. The
+ * webhook payload's `repository.html_url` never includes `.git`, but a user
+ * may have registered the repo with the suffix; mirror Apps.findByRepoUrl
+ * dual-lookup behaviour.
+ */
+async function findByEitherSuffix(finder, repoUrl) {
+  const exact = await finder(repoUrl);
+  if (exact.length > 0) return exact;
+  const withSuffix = await finder(repoUrl + '.git');
+  return withSuffix;
 }
 
 // GitHub webhook endpoint — uses raw body for HMAC verification
@@ -52,68 +67,97 @@ router.post('/github', expressRaw({ type: 'application/json', limit: '10mb' }), 
     // Normalize URL: strip .git suffix and trailing slashes
     const normalizedUrl = repoUrl.replace(/\.git$/, '').replace(/\/+$/, '');
 
-    // Find matching apps
-    const apps = await Apps.findByRepoUrl(normalizedUrl);
-    if (apps.length === 0) {
-      // Also try with .git suffix
-      const appsAlt = await Apps.findByRepoUrl(normalizedUrl + '.git');
-      if (appsAlt.length === 0) {
-        logger.warn(`Webhook: no app registered for repo: ${normalizedUrl}`);
-        return res.status(404).json({ error: 'No app registered for this repository' });
-      }
-      apps.push(...appsAlt);
+    // ── App matches ────────────────────────────────────────────────────
+    const apps = await findByEitherSuffix(Apps.findByRepoUrl.bind(Apps), normalizedUrl);
+    const sites = await findByEitherSuffix(StaticSites.findByRepoUrl.bind(StaticSites), normalizedUrl);
+
+    if (apps.length === 0 && sites.length === 0) {
+      logger.warn(`Webhook: no app or static site registered for repo: ${normalizedUrl}`);
+      return res.status(404).json({ error: 'No app or static site registered for this repository' });
     }
 
-    logger.info(`Webhook: found ${apps.length} app(s) matching repo ${normalizedUrl}: ${apps.map(a => a.name).join(', ')}`);
+    logger.info(
+      `Webhook: matched ${apps.length} app(s) and ${sites.length} static site(s) for ${normalizedUrl}`
+    );
 
     const deploymentsCreated = [];
+    const staticDeploysQueued = [];
 
+    // App deploys (existing behaviour, unchanged)
     for (const app of apps) {
-      // Check branch match
       const expectedRef = `refs/heads/${app.branch}`;
       if (ref !== expectedRef) {
-        logger.info(`Webhook: skipping ${app.name} — push ref '${ref}' does not match expected '${expectedRef}'`);
+        logger.info(`Webhook: skipping app ${app.name} — ref '${ref}' does not match '${expectedRef}'`);
         continue;
       }
 
-      // Verify webhook signature
       const secret = app.webhook_secret || config.github.webhookSecret;
       if (secret) {
         if (!verifyGitHubSignature(secret, rawBody, signature)) {
-          logger.warn(`Webhook: invalid signature for app '${app.name}' — check webhook secret matches GitHub`);
+          logger.warn(`Webhook: invalid signature for app '${app.name}'`);
           continue;
         }
-        logger.info(`Webhook: signature verified for ${app.name}`);
+        logger.info(`Webhook: signature verified for app ${app.name}`);
       } else {
-        logger.warn(`Webhook: no secret configured for ${app.name} — skipping signature check`);
+        logger.warn(`Webhook: no secret configured for app ${app.name} — skipping signature check`);
       }
 
-      // Skip paused apps — webhooks shouldn't queue deploys while pause is in effect
       if (app.paused) {
         logger.info(`Webhook: app ${app.name} is paused, skipping`);
         continue;
       }
-
-      // Check auto_deploy
       if (!app.auto_deploy) {
-        logger.info(`Webhook: auto-deploy disabled for ${app.name}, skipping`);
+        logger.info(`Webhook: auto-deploy disabled for app ${app.name}, skipping`);
         continue;
       }
 
-      // Create deployment
       const deployment = await Deployments.create({
         app_id: app.id,
         commit_hash: commitHash,
       });
-
-      logger.info(`Webhook: deployment #${deployment.id} created for ${app.name} (commit ${commitHash})`);
+      logger.info(`Webhook: app deployment #${deployment.id} created for ${app.name} (commit ${commitHash})`);
       deploymentsCreated.push(deployment);
     }
 
-    logger.info(`Webhook: done — created ${deploymentsCreated.length} deployment(s)`);
+    // Static-site deploys
+    for (const site of sites) {
+      const expectedRef = `refs/heads/${site.branch || 'main'}`;
+      if (ref !== expectedRef) {
+        logger.info(`Webhook: skipping static site ${site.name} — ref '${ref}' does not match '${expectedRef}'`);
+        continue;
+      }
+
+      const secret = site.webhook_secret || config.github.webhookSecret;
+      if (secret) {
+        if (!verifyGitHubSignature(secret, rawBody, signature)) {
+          logger.warn(`Webhook: invalid signature for static site '${site.name}'`);
+          continue;
+        }
+        logger.info(`Webhook: signature verified for static site ${site.name}`);
+      } else {
+        logger.warn(`Webhook: no secret configured for static site ${site.name} — skipping signature check`);
+      }
+
+      if (!site.auto_deploy) {
+        logger.info(`Webhook: auto-deploy disabled for static site ${site.name}, skipping`);
+        continue;
+      }
+
+      // Fire-and-forget — webhook responds immediately so GitHub doesn't time
+      // out on long builds. Result is observable via GET /:id/logs.
+      siteRuntime.deployFromGit(site, { commitHash, trigger: 'webhook' })
+        .catch(err => logger.error(`Webhook static deploy failed for ${site.name}: ${err.message}`));
+      staticDeploysQueued.push({ id: site.id, name: site.name });
+      logger.info(`Webhook: static-site deploy queued for ${site.name} (commit ${commitHash})`);
+    }
+
+    logger.info(
+      `Webhook: done — ${deploymentsCreated.length} app deployment(s), ${staticDeploysQueued.length} static deploy(s) queued`
+    );
     res.status(200).json({
-      message: `Created ${deploymentsCreated.length} deployment(s)`,
+      message: `Created ${deploymentsCreated.length} app deployment(s) and queued ${staticDeploysQueued.length} static deploy(s)`,
       deployments: deploymentsCreated,
+      static_deploys: staticDeploysQueued,
     });
   } catch (err) {
     logger.error('Webhook processing failed', err);

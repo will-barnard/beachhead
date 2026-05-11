@@ -237,6 +237,46 @@ const MIGRATIONS = [
       ALTER TABLE apps ADD COLUMN IF NOT EXISTS wake_page_html TEXT;
     `,
   },
+  {
+    // Git-backed static sites. Existing rows default to source_type='upload'
+    // so the legacy upload flow keeps working unchanged. When source_type='git':
+    //   repo_url           — HTTPS or SSH git URL (normalised, no .git suffix)
+    //   branch             — branch to deploy (default 'main')
+    //   subpath            — directory in the repo (or build output) to serve
+    //                        as the web root. '.' = repo root. e.g. 'dist'.
+    //   build_command      — optional shell command run inside build_image
+    //                        before subpath is published (e.g. 'npm ci && npm run build').
+    //                        Empty/null = no build step (pure static repo).
+    //   build_image        — Docker image used to run build_command.
+    //                        Default 'node:20-alpine'.
+    //   webhook_secret     — per-site secret for GitHub webhook HMAC. Falls
+    //                        back to GITHUB_WEBHOOK_SECRET env if empty.
+    //   auto_deploy        — whether GitHub push events trigger deploys.
+    //   last_deploy_state  — 'PENDING' | 'CLONING' | 'BUILDING' | 'PUBLISHING'
+    //                        | 'SUCCESS' | 'FAILED'
+    //   last_deploy_at     — timestamp of last attempt
+    //   last_commit_hash   — commit SHA of last successful publish
+    //   last_deploy_log    — tail of the deploy log (truncated)
+    name: '022_add_git_source_to_static_sites',
+    sql: `
+      ALTER TABLE static_sites ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL DEFAULT 'upload';
+      ALTER TABLE static_sites ADD COLUMN IF NOT EXISTS repo_url TEXT;
+      ALTER TABLE static_sites ADD COLUMN IF NOT EXISTS branch TEXT DEFAULT 'main';
+      ALTER TABLE static_sites ADD COLUMN IF NOT EXISTS subpath TEXT DEFAULT '.';
+      ALTER TABLE static_sites ADD COLUMN IF NOT EXISTS build_command TEXT;
+      ALTER TABLE static_sites ADD COLUMN IF NOT EXISTS build_image TEXT DEFAULT 'node:20-alpine';
+      ALTER TABLE static_sites ADD COLUMN IF NOT EXISTS webhook_secret TEXT;
+      ALTER TABLE static_sites ADD COLUMN IF NOT EXISTS auto_deploy BOOLEAN DEFAULT true;
+      ALTER TABLE static_sites ADD COLUMN IF NOT EXISTS last_deploy_state TEXT;
+      ALTER TABLE static_sites ADD COLUMN IF NOT EXISTS last_deploy_at TIMESTAMP;
+      ALTER TABLE static_sites ADD COLUMN IF NOT EXISTS last_commit_hash TEXT;
+      ALTER TABLE static_sites ADD COLUMN IF NOT EXISTS last_deploy_log TEXT;
+      CREATE INDEX IF NOT EXISTS idx_static_sites_repo_url ON static_sites(repo_url) WHERE repo_url IS NOT NULL;
+      ALTER TABLE static_sites
+        ADD CONSTRAINT static_sites_source_type_chk
+        CHECK (source_type IN ('upload', 'git'));
+    `,
+  },
 ];
 
 async function migrate() {

@@ -7,67 +7,14 @@ const StaticSites = require('../models/staticSites');
 const Apps = require('../models/apps');
 const AppEndpoints = require('../models/appEndpoints');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
-const { exec } = require('../services/docker');
-const config = require('../config');
+const siteRuntime = require('../services/staticSites');
 const logger = require('../logger');
 
 const router = Router();
 router.use(requireAuth, requireSuperAdmin);
 
-// ── Helpers ──
-
-const STATIC_BASE = path.join(config.deploy.baseDir, 'static-sites');
-
-function siteDir(siteId) {
-  return path.join(STATIC_BASE, `site-${siteId}`);
-}
-
-function webRoot(siteId) {
-  return path.join(siteDir(siteId), 'public');
-}
-
-function containerName(siteId) {
-  return `static-site-${siteId}`;
-}
-
 // 10 MB upload limit
 const upload = multer({ dest: '/tmp/beachhead-uploads', limits: { fileSize: 10 * 1024 * 1024 } });
-
-/**
- * Start (or restart) the nginx container for a static site.
- * Uses the shared beachhead-net so nginx-proxy picks it up.
- */
-async function startContainer(site) {
-  const name = containerName(site.id);
-  const root = webRoot(site.id);
-  const hosts = site.www_redirect ? `${site.domain},www.${site.domain}` : site.domain;
-
-  // Stop existing container if running (ignore errors)
-  try {
-    await exec('docker', ['rm', '-f', name], { timeout: 15000 });
-  } catch { /* container may not exist */ }
-
-  const args = [
-    'run', '-d',
-    '--name', name,
-    '--restart', 'unless-stopped',
-    '--network', config.deploy.dockerNetwork,
-    '-e', `VIRTUAL_HOST=${hosts}`,
-    '-e', 'VIRTUAL_PORT=80',
-    '-e', `LETSENCRYPT_HOST=${hosts}`,
-    '-v', `${root}:/usr/share/nginx/html:ro`,
-    'nginx:alpine',
-  ];
-
-  await exec('docker', args, { timeout: 30000 });
-  logger.info(`Static site container started: ${name} for ${site.domain}`);
-}
-
-async function stopContainer(siteId) {
-  try {
-    await exec('docker', ['rm', '-f', containerName(siteId)], { timeout: 15000 });
-  } catch { /* ok if not running */ }
-}
 
 /**
  * Unzip a .zip file into the web root.
@@ -79,6 +26,27 @@ function unzip(zipPath, destDir) {
       resolve();
     });
   });
+}
+
+// Match Apps.routes#create — accept HTTPS or SSH git URLs, normalise away the
+// .git suffix and trailing slashes so webhook lookups are deterministic.
+function normaliseRepoUrl(repoUrl) {
+  return repoUrl.replace(/\.git$/, '').replace(/\/+$/, '');
+}
+function isValidRepoUrl(repoUrl) {
+  return /^https?:\/\/.+/.test(repoUrl) || /^git@[^:]+:.+\/.+/.test(repoUrl);
+}
+
+async function assertDomainAvailable(domain, ignoreSiteId = null) {
+  const existingApp = await Apps.findByDomain(domain);
+  if (existingApp) return `Domain already used by app "${existingApp.name}"`;
+  const existingEndpoint = await AppEndpoints.findByDomain(domain);
+  if (existingEndpoint) return 'Domain already used by an app endpoint';
+  const existingSite = await StaticSites.findByDomain(domain);
+  if (existingSite && existingSite.id !== ignoreSiteId) {
+    return `Domain already used by static site "${existingSite.name}"`;
+  }
+  return null;
 }
 
 // ── Routes ──
@@ -106,40 +74,86 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// Create static site (metadata only)
+// Last deploy log (for git-backed sites). Cheap — single column read.
+router.get('/:id/logs', async (req, res) => {
+  try {
+    const site = await StaticSites.findById(req.params.id);
+    if (!site) return res.status(404).json({ error: 'Static site not found' });
+    res.json({
+      state: site.last_deploy_state,
+      at: site.last_deploy_at,
+      commit: site.last_commit_hash,
+      log: site.last_deploy_log || '',
+    });
+  } catch (err) {
+    logger.error('Failed to get static site logs', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * Create a static site.
+ *
+ * Accepts two source modes:
+ *   { source_type: 'upload' (default), name, domain }
+ *   { source_type: 'git',     name, domain, repo_url, branch?, subpath?,
+ *                              build_command?, build_image?, webhook_secret?,
+ *                              auto_deploy? }
+ *
+ * For git mode this only registers the site — content arrives on the first
+ * POST /:id/deploy-from-git or via the matching GitHub webhook.
+ */
 router.post('/', async (req, res) => {
   try {
-    const { name, domain } = req.body;
+    const {
+      name, domain,
+      source_type, repo_url, branch, subpath, build_command, build_image,
+      webhook_secret, auto_deploy,
+    } = req.body;
+
     if (!name || !domain) {
       return res.status(400).json({ error: 'name and domain are required' });
     }
+    const mode = source_type === 'git' ? 'git' : 'upload';
 
-    // Check uniqueness across apps, app endpoints, and static sites
-    const existingApp = await Apps.findByDomain(domain);
-    if (existingApp) {
-      return res.status(409).json({ error: `Domain already used by app "${existingApp.name}"` });
-    }
-    const existingEndpoint = await AppEndpoints.findByDomain(domain);
-    if (existingEndpoint) {
-      return res.status(409).json({ error: 'Domain already used by an app endpoint' });
-    }
-    const existingSite = await StaticSites.findByDomain(domain);
-    if (existingSite) {
-      return res.status(409).json({ error: `Domain already used by static site "${existingSite.name}"` });
+    if (mode === 'git') {
+      if (!repo_url) return res.status(400).json({ error: 'repo_url is required for git mode' });
+      if (!isValidRepoUrl(repo_url)) {
+        return res.status(400).json({ error: 'repo_url must be an HTTPS URL or SSH git URL (git@host:org/repo)' });
+      }
     }
 
-    const site = await StaticSites.create({ name, domain });
+    const conflict = await assertDomainAvailable(domain);
+    if (conflict) return res.status(409).json({ error: conflict });
 
-    // Create web root with a placeholder
-    const root = webRoot(site.id);
+    const site = await StaticSites.create({
+      name,
+      domain,
+      source_type: mode,
+      repo_url: mode === 'git' ? normaliseRepoUrl(repo_url) : null,
+      branch: mode === 'git' ? (branch || 'main') : null,
+      subpath: mode === 'git' ? (subpath || '.') : null,
+      build_command: mode === 'git' ? (build_command || null) : null,
+      build_image: mode === 'git' ? (build_image || 'node:20-alpine') : null,
+      webhook_secret: mode === 'git' ? (webhook_secret || null) : null,
+      auto_deploy: mode === 'git' ? (auto_deploy !== false) : null,
+    });
+
+    // Seed a placeholder web root so an upload-mode site has something to
+    // serve before its first upload, and so a git-mode site has a "build
+    // pending" page until its first deploy lands.
+    const root = siteRuntime.webRoot(site.id);
     fs.mkdirSync(root, { recursive: true });
+    const message = mode === 'git'
+      ? `<p>Awaiting first deploy from <code>${site.repo_url}</code> (${site.branch}).</p>`
+      : `<p>Upload files to deploy this site.</p>`;
     fs.writeFileSync(
       path.join(root, 'index.html'),
-      `<!DOCTYPE html><html><head><title>${site.name}</title></head><body><h1>${site.name}</h1><p>Upload files to deploy this site.</p></body></html>`,
+      `<!DOCTYPE html><html><head><title>${site.name}</title></head><body><h1>${site.name}</h1>${message}</body></html>`,
       'utf8'
     );
 
-    logger.info(`Static site created: ${site.name} (${site.domain})`);
+    logger.info(`Static site created: ${site.name} (${site.domain}) [source=${mode}]`);
     res.status(201).json(site);
   } catch (err) {
     logger.error('Failed to create static site', err);
@@ -147,32 +161,81 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Upload files (index.html or .zip) and deploy
+/**
+ * Update site settings. Accepts the writable subset (see model). Domain is
+ * uniqueness-checked. source_type cannot be changed in place — that would
+ * require destroying state from the prior mode.
+ */
+router.put('/:id', async (req, res) => {
+  try {
+    const site = await StaticSites.findById(req.params.id);
+    if (!site) return res.status(404).json({ error: 'Static site not found' });
+
+    const {
+      name, domain, www_redirect,
+      repo_url, branch, subpath, build_command, build_image,
+      webhook_secret, auto_deploy,
+    } = req.body;
+
+    if (req.body.source_type && req.body.source_type !== site.source_type) {
+      return res.status(400).json({ error: 'source_type cannot be changed; delete and recreate the site' });
+    }
+
+    if (domain && domain !== site.domain) {
+      const conflict = await assertDomainAvailable(domain, site.id);
+      if (conflict) return res.status(409).json({ error: conflict });
+    }
+    if (repo_url !== undefined && repo_url !== null && !isValidRepoUrl(repo_url)) {
+      return res.status(400).json({ error: 'repo_url must be an HTTPS URL or SSH git URL' });
+    }
+
+    const updated = await StaticSites.update(site.id, {
+      name, domain, www_redirect,
+      repo_url: repo_url ? normaliseRepoUrl(repo_url) : repo_url,
+      branch, subpath, build_command, build_image,
+      webhook_secret, auto_deploy,
+    });
+
+    // If domain changed, the running container's VIRTUAL_HOST needs refreshing.
+    if (domain && domain !== site.domain) {
+      try { await siteRuntime.startContainer(updated); } catch (e) {
+        logger.warn(`Domain updated but container restart failed: ${e.message}`);
+      }
+    }
+
+    res.json(updated);
+  } catch (err) {
+    logger.error('Failed to update static site', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Upload files (index.html or .zip) and deploy. Upload-mode sites only —
+// uploading to a git-mode site is rejected so it can't get out of sync with
+// the git source of truth.
 router.post('/:id/upload', upload.single('file'), async (req, res) => {
   let tmpPath = null;
   try {
     const site = await StaticSites.findById(req.params.id);
     if (!site) return res.status(404).json({ error: 'Static site not found' });
-
+    if (site.source_type === 'git') {
+      return res.status(409).json({ error: 'This site is git-backed — use POST /:id/deploy-from-git instead' });
+    }
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
     tmpPath = req.file.path;
     const originalName = req.file.originalname || '';
-    const root = webRoot(site.id);
+    const root = siteRuntime.webRoot(site.id);
 
-    // Clear existing files
     if (fs.existsSync(root)) {
       fs.rmSync(root, { recursive: true, force: true });
     }
     fs.mkdirSync(root, { recursive: true });
 
     if (originalName.endsWith('.zip')) {
-      // Extract zip into web root
       await unzip(tmpPath, root);
-
-      // If the zip contained a single top-level directory, hoist its contents
       const entries = fs.readdirSync(root);
       if (entries.length === 1) {
         const inner = path.join(root, entries[0]);
@@ -184,22 +247,18 @@ router.post('/:id/upload', upload.single('file'), async (req, res) => {
         }
       }
     } else {
-      // Single file — treat as index.html
       fs.copyFileSync(tmpPath, path.join(root, 'index.html'));
     }
 
-    // Clean up temp file
     fs.unlinkSync(tmpPath);
     tmpPath = null;
 
-    // Start or restart the container
-    await startContainer(site);
+    await siteRuntime.startContainer(site);
     await StaticSites.update(site.id, { name: site.name }); // touch updated_at
 
     logger.info(`Static site deployed: ${site.name} (${site.domain})`);
     res.json({ message: `Site deployed to ${site.domain}` });
   } catch (err) {
-    // Clean up temp file on error
     if (tmpPath && fs.existsSync(tmpPath)) {
       try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
     }
@@ -208,21 +267,58 @@ router.post('/:id/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// Deploy (start/restart container for already-uploaded files)
+/**
+ * Trigger a git deploy synchronously. Returns 200 with the final state on
+ * success, 500 with the truncated log on failure. Coalesces with any other
+ * in-flight deploy for the same site so two presses of the button just
+ * subscribe to the same run.
+ *
+ * This is the manual counterpart to the webhook path. The webhook handler
+ * fires-and-forgets; here we wait so the dashboard can show success/fail
+ * in the same request cycle.
+ */
+router.post('/:id/deploy-from-git', async (req, res) => {
+  try {
+    const site = await StaticSites.findById(req.params.id);
+    if (!site) return res.status(404).json({ error: 'Static site not found' });
+    if (site.source_type !== 'git') {
+      return res.status(409).json({ error: 'This site is upload-backed; use POST /:id/upload' });
+    }
+
+    await siteRuntime.deployFromGit(site, { trigger: 'manual' });
+    const refreshed = await StaticSites.findById(site.id);
+    res.json({
+      message: `Deploy succeeded for ${site.domain}`,
+      state: refreshed.last_deploy_state,
+      commit: refreshed.last_commit_hash,
+    });
+  } catch (err) {
+    logger.error('Static git deploy failed', err);
+    // Pull the persisted log tail so the client sees what happened
+    const refreshed = await StaticSites.findById(req.params.id).catch(() => null);
+    res.status(500).json({
+      error: err.message,
+      log: refreshed?.last_deploy_log || null,
+    });
+  }
+});
+
+// Restart the container without changing files. For upload mode this is "kick
+// nginx"; for git mode use POST /:id/deploy-from-git instead (this just
+// re-attaches whatever's already in webRoot).
 router.post('/:id/deploy', async (req, res) => {
   try {
     const site = await StaticSites.findById(req.params.id);
     if (!site) return res.status(404).json({ error: 'Static site not found' });
 
-    const root = webRoot(site.id);
+    const root = siteRuntime.webRoot(site.id);
     if (!fs.existsSync(path.join(root, 'index.html'))) {
-      return res.status(400).json({ error: 'No files uploaded yet — upload files first' });
+      return res.status(400).json({ error: 'No files deployed yet' });
     }
-
-    await startContainer(site);
+    await siteRuntime.startContainer(site);
     res.json({ message: `Container started for ${site.domain}` });
   } catch (err) {
-    logger.error('Failed to deploy static site', err);
+    logger.error('Failed to restart static site', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -236,13 +332,11 @@ router.post('/:id/www', async (req, res) => {
     await StaticSites.update(site.id, { www_redirect: true });
     site.www_redirect = true;
 
-    // Write vhost.d redirect config
     const vhostdDir = '/etc/nginx/vhost.d';
     const locationFile = path.join(vhostdDir, `www.${site.domain}_location`);
     fs.writeFileSync(locationFile, `return 301 https://${site.domain}$request_uri;\n`, 'utf8');
 
-    // Restart container with updated hosts
-    await startContainer(site);
+    await siteRuntime.startContainer(site);
 
     logger.info(`WWW redirect enabled for static site ${site.name} (${site.domain})`);
     res.json({ message: `WWW enabled — cert request and redirect configured for www.${site.domain}` });
@@ -258,13 +352,10 @@ router.delete('/:id', async (req, res) => {
     const site = await StaticSites.findById(req.params.id);
     if (!site) return res.status(404).json({ error: 'Static site not found' });
 
-    await stopContainer(site.id);
+    await siteRuntime.stopContainer(site.id);
 
-    // Remove files
-    const dir = siteDir(site.id);
-    if (fs.existsSync(dir)) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = siteRuntime.siteDir(site.id);
+    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
 
     await StaticSites.delete(site.id);
     logger.info(`Static site deleted: ${site.name}`);

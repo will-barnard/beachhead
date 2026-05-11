@@ -5,10 +5,19 @@
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem;">
       <h2>
         {{ site.name }}
-        <span class="badge badge-info" style="margin-left:0.5rem; font-size:0.7rem;">static</span>
+        <span class="badge badge-info" style="margin-left:0.5rem; font-size:0.7rem;">
+          {{ site.source_type === 'git' ? 'static · git' : 'static · upload' }}
+        </span>
       </h2>
       <div>
-        <button class="btn" @click="deploy" :disabled="deploying" style="margin-right:0.5rem;">
+        <button v-if="site.source_type === 'git'"
+                class="btn"
+                @click="deployFromGit"
+                :disabled="deploying"
+                style="margin-right:0.5rem;">
+          {{ deploying ? 'Deploying...' : 'Deploy from Git' }}
+        </button>
+        <button v-else class="btn" @click="restart" :disabled="deploying" style="margin-right:0.5rem;">
           {{ deploying ? 'Starting...' : 'Restart Container' }}
         </button>
         <button class="btn btn-danger" @click="deleteSite">Delete</button>
@@ -17,11 +26,11 @@
 
     <HomeNetworkBanner context="static site" :domain="site.domain" />
 
-    <!-- Details -->
+    <!-- Details ────────────────────────────────────────────────────── -->
     <div class="card">
       <h3 style="margin-bottom:0.75rem;">Details</h3>
       <table style="width:100%; font-size:0.875rem;">
-        <tr><td style="color: var(--muted); width:150px;">Domain</td><td>{{ site.domain }}</td></tr>
+        <tr><td style="color: var(--muted); width:170px;">Domain</td><td>{{ site.domain }}</td></tr>
         <tr><td style="color: var(--muted);">Created</td><td>{{ new Date(site.created_at).toLocaleString() }}</td></tr>
         <tr><td style="color: var(--muted);">Last Updated</td><td>{{ new Date(site.updated_at).toLocaleString() }}</td></tr>
         <tr>
@@ -37,8 +46,59 @@
       </table>
     </div>
 
-    <!-- Upload -->
-    <div class="card">
+    <!-- Git config ──────────────────────────────────────────────────── -->
+    <div v-if="site.source_type === 'git'" class="card">
+      <h3 style="margin-bottom:0.75rem;">Git source</h3>
+      <table style="width:100%; font-size:0.875rem;">
+        <tr><td style="color: var(--muted); width:170px;">Repository</td><td><code>{{ site.repo_url }}</code></td></tr>
+        <tr><td style="color: var(--muted);">Branch</td><td><code>{{ site.branch }}</code></td></tr>
+        <tr><td style="color: var(--muted);">Sub-path</td><td><code>{{ site.subpath }}</code></td></tr>
+        <tr v-if="site.build_command">
+          <td style="color: var(--muted);">Build command</td>
+          <td><code>{{ site.build_command }}</code></td>
+        </tr>
+        <tr v-if="site.build_command">
+          <td style="color: var(--muted);">Build image</td>
+          <td><code>{{ site.build_image }}</code></td>
+        </tr>
+        <tr>
+          <td style="color: var(--muted);">Auto-deploy on push</td>
+          <td>
+            <span v-if="site.auto_deploy" class="badge badge-success">on</span>
+            <span v-else class="badge">off</span>
+          </td>
+        </tr>
+        <tr v-if="site.last_deploy_state">
+          <td style="color: var(--muted);">Last deploy</td>
+          <td>
+            <span :class="['badge', stateBadgeClass]">{{ site.last_deploy_state }}</span>
+            <span v-if="site.last_deploy_at" style="color:var(--muted); margin-left:0.5rem;">
+              {{ new Date(site.last_deploy_at).toLocaleString() }}
+            </span>
+            <span v-if="site.last_commit_hash" style="color:var(--muted); margin-left:0.5rem;">
+              · <code>{{ site.last_commit_hash.slice(0, 7) }}</code>
+            </span>
+          </td>
+        </tr>
+      </table>
+      <div v-if="logs" style="margin-top:0.75rem;">
+        <details>
+          <summary style="cursor:pointer; font-size:0.85rem; color:var(--muted);">Show last deploy log</summary>
+          <pre style="margin-top:0.5rem; padding:0.75rem; background:var(--bg-2); font-size:0.75rem; max-height:400px; overflow:auto;">{{ logs }}</pre>
+        </details>
+      </div>
+    </div>
+
+    <!-- Webhook hint for git sites ──────────────────────────────────── -->
+    <div v-if="site.source_type === 'git'" class="card" style="font-size:0.85rem; color:var(--muted);">
+      To enable auto-deploy, point a GitHub webhook at
+      <code>https://&lt;BEACHHEAD_DOMAIN&gt;/api/webhooks/github</code> with
+      content type <code>application/json</code>, the <em>push</em> event, and
+      the secret you configured here (or the global <code>GITHUB_WEBHOOK_SECRET</code>).
+    </div>
+
+    <!-- Upload UI (upload-mode sites only) ─────────────────────────── -->
+    <div v-if="site.source_type !== 'git'" class="card">
       <h3 style="margin-bottom:0.75rem;">Upload Files</h3>
       <p style="color:var(--muted); font-size:0.85rem; margin-bottom:0.75rem;">
         Upload an <code>index.html</code> file or a <code>.zip</code> archive containing your site files.
@@ -72,7 +132,16 @@ export default {
     uploading: false,
     uploadMessage: null,
     uploadError: null,
+    logs: '',
   }),
+  computed: {
+    stateBadgeClass() {
+      const s = this.site?.last_deploy_state;
+      if (s === 'SUCCESS') return 'badge-success';
+      if (s === 'FAILED') return 'badge-danger';
+      return 'badge-info';
+    },
+  },
   async created() {
     await this.load();
   },
@@ -80,6 +149,12 @@ export default {
     async load() {
       try {
         this.site = await api.getStaticSite(this.$route.params.id);
+        if (this.site.source_type === 'git') {
+          try {
+            const r = await api.getStaticSiteLogs(this.site.id);
+            this.logs = r.log || '';
+          } catch { /* logs are best-effort */ }
+        }
       } catch (e) {
         this.error = e.message;
       } finally {
@@ -108,13 +183,28 @@ export default {
         this.uploading = false;
       }
     },
-    async deploy() {
+    async restart() {
       this.deploying = true;
       try {
         await api.deployStaticSite(this.site.id);
         alert('Container restarted');
       } catch (e) {
         alert('Failed: ' + e.message);
+      } finally {
+        this.deploying = false;
+      }
+    },
+    async deployFromGit() {
+      this.deploying = true;
+      try {
+        const result = await api.deployStaticSiteFromGit(this.site.id);
+        alert(`${result.message}${result.commit ? ` (commit ${result.commit.slice(0, 7)})` : ''}`);
+        await this.load();
+      } catch (e) {
+        // The error message from the server may include the failure log path —
+        // just show the message; logs are visible via the disclosure below.
+        alert('Deploy failed: ' + e.message);
+        await this.load();
       } finally {
         this.deploying = false;
       }

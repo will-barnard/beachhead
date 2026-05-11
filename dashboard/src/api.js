@@ -71,8 +71,11 @@ export default {
   getStaticSites: () => request('/static-sites'),
   getStaticSite: (id) => request(`/static-sites/${id}`),
   createStaticSite: (data) => request('/static-sites', { method: 'POST', body: data }),
+  updateStaticSite: (id, data) => request(`/static-sites/${id}`, { method: 'PUT', body: data }),
   deleteStaticSite: (id) => request(`/static-sites/${id}`, { method: 'DELETE' }),
   deployStaticSite: (id) => request(`/static-sites/${id}/deploy`, { method: 'POST', body: {} }),
+  deployStaticSiteFromGit: (id) => request(`/static-sites/${id}/deploy-from-git`, { method: 'POST', body: {} }),
+  getStaticSiteLogs: (id) => request(`/static-sites/${id}/logs`),
   enableStaticSiteWww: (id) => request(`/static-sites/${id}/www`, { method: 'POST', body: {} }),
 
   // System
