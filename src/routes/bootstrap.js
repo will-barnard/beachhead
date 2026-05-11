@@ -201,13 +201,10 @@ router.delete('/users/:id', requireAuth, requireSuperAdmin, async (req, res) => 
 router.get('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const settings = await Settings.getAll();
-    // Never expose registry password in full
-    if (settings.registry_password) {
-      settings.registry_password = settings.registry_password ? '••••••••' : '';
-    }
-    if (settings.ghcr_token) {
-      settings.ghcr_token = settings.ghcr_token ? '••••••••' : '';
-    }
+    // Never expose secrets in full — return a placeholder if set
+    if (settings.registry_password) settings.registry_password = '••••••••';
+    if (settings.ghcr_token) settings.ghcr_token = '••••••••';
+    if (settings.git_https_token) settings.git_https_token = '••••••••';
     res.json(settings);
   } catch (err) {
     logger.error('Failed to get settings', err);
@@ -241,7 +238,7 @@ router.post('/worker-token', requireAuth, requireSuperAdmin, async (req, res) =>
  * Update settings (admin only). Accepts { key: value } pairs.
  */
 router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
-  const allowed = ['build_mode', 'registry_type', 'registry_url', 'registry_user', 'registry_password', 'ghcr_owner', 'ghcr_token', 'git_ssh_key_path', 'network_mode', 'staging_root_domain'];
+  const allowed = ['build_mode', 'registry_type', 'registry_url', 'registry_user', 'registry_password', 'ghcr_owner', 'ghcr_token', 'git_ssh_key_path', 'git_https_token', 'network_mode', 'staging_root_domain'];
   const updates = req.body;
 
   if (!updates || typeof updates !== 'object') {
@@ -272,12 +269,14 @@ router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
       // Skip masked password — don't overwrite with placeholder
       if (key === 'registry_password' && value === '••••••••') continue;
       if (key === 'ghcr_token' && value === '••••••••') continue;
+      if (key === 'git_https_token' && value === '••••••••') continue;
       await Settings.set(key, String(value));
     }
     logger.info(`Settings updated by ${req.user.username || 'bootstrap'}`);
     const settings = await Settings.getAll();
     if (settings.registry_password) settings.registry_password = '••••••••';
     if (settings.ghcr_token) settings.ghcr_token = '••••••••';
+    if (settings.git_https_token) settings.git_https_token = '••••••••';
     res.json(settings);
   } catch (err) {
     logger.error(`Settings update failed: ${err.message}`);

@@ -277,6 +277,14 @@ const MIGRATIONS = [
         CHECK (source_type IN ('upload', 'git'));
     `,
   },
+  {
+    // HTTPS token for cloning private repos. Stored encrypted-at-rest by
+    // Postgres (pgdata volume). Never returned in plain text by the API.
+    name: '023_add_git_https_token_setting',
+    sql: `
+      INSERT INTO settings (key, value) VALUES ('git_https_token', '') ON CONFLICT DO NOTHING;
+    `,
+  },
 ];
 
 async function migrate() {

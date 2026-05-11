@@ -140,6 +140,16 @@
         </p>
       </div>
 
+      <div style="margin-top: 1.5rem; max-width: 400px;">
+        <label>GitHub Personal Access Token (HTTPS)</label>
+        <input v-model="buildSettings.git_https_token" type="password" autocomplete="new-password" style="width: 100%;" placeholder="(unchanged if left blank)" />
+        <p style="color: var(--muted); font-size: 0.85rem; margin: 0.4rem 0 0;">
+          Used to clone private repositories over HTTPS. Create a
+          <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">GitHub PAT</a>
+          with <code>repo</code> (or <code>contents: read</code>) scope. Leave blank to keep the current token.
+        </p>
+      </div>
+
       <button class="btn" @click="saveBuildSettings" :disabled="savingBuild" style="margin-top: 1.5rem;">
         {{ savingBuild ? 'Saving...' : 'Save Build Settings' }}
       </button>
@@ -274,6 +284,7 @@ export default {
       ghcr_owner: '',
       ghcr_token: '',
       git_ssh_key_path: '',
+      git_https_token: '',
     },
     buildError: null,
     buildSuccess: null,
@@ -376,6 +387,7 @@ export default {
         this.buildSettings.ghcr_owner = settings.ghcr_owner || '';
         this.buildSettings.ghcr_token = '';  // never display — show placeholder
         this.buildSettings.git_ssh_key_path = settings.git_ssh_key_path || '';
+        this.buildSettings.git_https_token = '';  // never display — show placeholder
       } catch {
         // settings may not exist yet
       }
@@ -389,10 +401,12 @@ export default {
         // Don't send empty secrets (means "keep existing")
         if (!payload.registry_password) delete payload.registry_password;
         if (!payload.ghcr_token) delete payload.ghcr_token;
+        if (!payload.git_https_token) delete payload.git_https_token;
         await api.updateSettings(payload);
         this.buildSuccess = 'Build settings saved';
         this.buildSettings.registry_password = '';
         this.buildSettings.ghcr_token = '';
+        this.buildSettings.git_https_token = '';
       } catch (e) {
         this.buildError = e.message;
       } finally {

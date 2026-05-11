@@ -162,7 +162,14 @@ function publish(site, workDir, logSink) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
 
   // fs.cpSync (Node 16.7+) handles recursive copy with symlinks.
-  fs.cpSync(sourceDir, staging, { recursive: true, dereference: false, errorOnExist: false });
+  // Filter out .git — it has read-only pack files that cause chmod EACCES,
+  // and it should never end up in the web root anyway.
+  fs.cpSync(sourceDir, staging, {
+    recursive: true,
+    dereference: false,
+    errorOnExist: false,
+    filter: (src) => !src.split(path.sep).includes('.git'),
+  });
 
   // Swap. rmSync the old, rename staging to target.
   if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });

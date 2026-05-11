@@ -49,9 +49,13 @@ function exec(command, args, options = {}) {
  * Supports HTTPS and SSH URLs.
  * For SSH: set GIT_SSH_COMMAND in env, or provide GIT_SSH_KEY (path to private key file),
  * or configure git_ssh_key_path in app settings.
+ * For HTTPS private repos: set GIT_HTTPS_TOKEN env var or configure git_https_token in settings.
  */
 async function gitClone(repoUrl, branch, destDir) {
   const extraEnv = {};
+  let cloneUrl = repoUrl;
+  let hasCredentials = false;
+
   if (process.env.GIT_SSH_KEY) {
     extraEnv.GIT_SSH_COMMAND = `ssh -i ${process.env.GIT_SSH_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`;
   } else if (process.env.GIT_SSH_COMMAND) {
@@ -64,7 +68,24 @@ async function gitClone(repoUrl, branch, destDir) {
       extraEnv.GIT_SSH_COMMAND = `ssh -i ${resolved} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`;
     }
   }
-  await exec('git', ['clone', '--depth', '1', '--branch', branch, '--', repoUrl, destDir], { env: extraEnv });
+
+  // HTTPS private repo auth — inject token into URL
+  if (/^https?:\/\//i.test(repoUrl)) {
+    const token = process.env.GIT_HTTPS_TOKEN || (await Settings.get('git_https_token'));
+    if (token) {
+      const url = new URL(repoUrl);
+      url.username = 'x-access-token';
+      url.password = token;
+      cloneUrl = url.toString();
+      hasCredentials = true;
+    }
+  }
+
+  // Use silent:true when credentials are embedded so they never appear in logs
+  await exec('git', ['clone', '--depth', '1', '--branch', branch, '--', cloneUrl, destDir], {
+    env: extraEnv,
+    silent: hasCredentials,
+  });
 }
 
 /**
