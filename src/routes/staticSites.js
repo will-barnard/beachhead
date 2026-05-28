@@ -13,8 +13,8 @@ const logger = require('../logger');
 const router = Router();
 router.use(requireAuth, requireSuperAdmin);
 
-// 10 MB upload limit
-const upload = multer({ dest: '/tmp/beachhead-uploads', limits: { fileSize: 10 * 1024 * 1024 } });
+// 8 GB upload limit
+const upload = multer({ dest: '/tmp/beachhead-uploads', limits: { fileSize: 8 * 1024 * 1024 * 1024 } });
 
 /**
  * Unzip a .zip file into the web root.

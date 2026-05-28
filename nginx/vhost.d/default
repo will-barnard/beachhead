@@ -9,4 +9,9 @@ location ^~ /.well-known/acme-challenge/ {
     break;
 }
 
-client_max_body_size 50m;
+client_max_body_size 8192m;
+
+# Allow large uploads (e.g. 6 GB static site zips) to transfer without timing out.
+proxy_read_timeout 3600s;
+proxy_send_timeout 3600s;
+client_body_timeout 3600s;
