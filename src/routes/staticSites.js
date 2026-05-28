@@ -2,7 +2,7 @@ const { Router } = require('express');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
-const { execFile } = require('child_process');
+const { spawn } = require('child_process');
 const StaticSites = require('../models/staticSites');
 const Apps = require('../models/apps');
 const AppEndpoints = require('../models/appEndpoints');
@@ -21,8 +21,12 @@ const upload = multer({ dest: '/tmp/beachhead-uploads', limits: { fileSize: 8 * 
  */
 function unzip(zipPath, destDir) {
   return new Promise((resolve, reject) => {
-    execFile('unzip', ['-o', zipPath, '-d', destDir], { timeout: 30000 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(`unzip failed: ${stderr || err.message}`));
+    const child = spawn('unzip', ['-o', zipPath, '-d', destDir]);
+    let stderr = '';
+    child.stderr.on('data', (data) => { stderr += data; });
+    child.on('error', (err) => reject(new Error(`unzip failed: ${err.message}`)));
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error(`unzip failed: ${stderr || `exited with code ${code}`}`));
       resolve();
     });
   });
