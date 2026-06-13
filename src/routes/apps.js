@@ -18,6 +18,15 @@ const logger = require('../logger');
 
 const router = Router();
 
+// Strip the raw webhook_secret from any app object before sending to the
+// client. The presence of a secret is indicated via has_webhook_secret so the
+// UI can show "Set / Not set" without leaking the value.
+function sanitizeApp(app) {
+  if (!app) return app;
+  const { webhook_secret, ...rest } = app;
+  return { ...rest, has_webhook_secret: !!webhook_secret };
+}
+
 // All app routes require auth + super_admin
 router.use(requireAuth, requireSuperAdmin);
 
@@ -25,7 +34,7 @@ router.use(requireAuth, requireSuperAdmin);
 router.get('/', async (req, res) => {
   try {
     const apps = await Apps.findAll();
-    res.json(apps);
+    res.json(apps.map(sanitizeApp));
   } catch (err) {
     logger.error('Failed to list apps', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -37,7 +46,7 @@ router.get('/:id', async (req, res) => {
   try {
     const app = await Apps.findById(req.params.id);
     if (!app) return res.status(404).json({ error: 'App not found' });
-    res.json(app);
+    res.json(sanitizeApp(app));
   } catch (err) {
     logger.error('Failed to get app', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -103,7 +112,7 @@ router.post('/', async (req, res) => {
     }
 
     logger.info(`App created: ${app.name} (${app.domain})`);
-    res.status(201).json(app);
+    res.status(201).json(sanitizeApp(app));
   } catch (err) {
     logger.error('Failed to create app', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -156,7 +165,7 @@ router.put('/:id', async (req, res) => {
 
     const updated = await Apps.update(req.params.id, payload);
     logger.info(`App updated: ${updated.name} (id=${updated.id})`);
-    res.json(updated);
+    res.json(sanitizeApp(updated));
   } catch (err) {
     logger.error('Failed to update app', err);
     res.status(500).json({ error: 'Internal server error' });

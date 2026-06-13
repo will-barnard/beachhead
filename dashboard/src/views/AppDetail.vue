@@ -73,6 +73,7 @@
         <tr><td style="color: var(--muted);">Auto-Deploy</td><td>{{ app.auto_deploy ? 'Yes' : 'No' }}</td></tr>
         <tr><td style="color: var(--muted);">Stop Previous</td><td>{{ app.stop_previous !== false ? 'Yes' : 'No' }}</td></tr>
         <tr><td style="color: var(--muted);">System App</td><td>{{ app.system_app ? 'Yes' : 'No' }}</td></tr>
+        <tr><td style="color: var(--muted);">Webhook Secret</td><td>{{ app.has_webhook_secret ? 'Set' : 'Not set' }}</td></tr>
         <tr>
           <td style="color: var(--muted);">WWW Redirect</td>
           <td>
@@ -114,6 +115,10 @@
             <input type="checkbox" v-model="settingsForm.auto_deploy" id="auto_deploy_edit" style="width:auto; margin:0;" />
             <label for="auto_deploy_edit" style="margin:0; color:var(--text);">Auto-deploy on push</label>
           </div>
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label>Webhook Secret</label>
+          <input v-model="settingsForm.webhook_secret" type="password" autocomplete="new-password" placeholder="enter new secret to update, or leave blank to keep existing" />
         </div>
       </div>
     </div>
@@ -777,6 +782,7 @@ export default {
         public_service: this.app.public_service || '',
         public_port: this.app.public_port || '',
         auto_deploy: this.app.auto_deploy,
+        webhook_secret: '',
       };
       this.editingSettings = true;
     },
@@ -787,7 +793,9 @@ export default {
     async saveSettings() {
       this.savingSettings = true;
       try {
-        await api.updateApp(this.app.id, this.settingsForm);
+        const payload = { ...this.settingsForm };
+        if (!payload.webhook_secret) delete payload.webhook_secret;
+        await api.updateApp(this.app.id, payload);
         this.editingSettings = false;
         await this.load();
       } catch (e) {
