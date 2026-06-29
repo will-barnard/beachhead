@@ -72,6 +72,93 @@ install_pkg() {
   esac
 }
 
+resolve_node_arch() {
+  local machine_arch
+  machine_arch="$(uname -m)"
+  case "$machine_arch" in
+    x86_64|amd64) echo "x64" ;;
+    arm64|aarch64) echo "arm64" ;;
+    armv7l)        echo "armv7l" ;;
+    *)             return 1 ;;
+  esac
+}
+
+latest_node_lts_version() {
+  curl -fsSL "https://nodejs.org/dist/index.json" | awk '
+    /"version":/ { gsub(/[\",]/, "", $2); version=$2 }
+    /"lts":/ && $2 != "false," { print version; exit }
+  '
+}
+
+install_node() {
+  if command -v node &>/dev/null; then
+    ok "Node.js found: $(node --version)"
+    return 0
+  fi
+
+  info "Node.js not found. Installing Node.js LTS..."
+
+  local node_os node_arch node_version node_tarball node_url
+  local extract_dir install_root bin_root node_dir
+  local SUDO_CMD=""
+
+  case "$PLATFORM" in
+    linux) node_os="linux" ;;
+    macos) node_os="darwin" ;;
+    *) fail "Unsupported platform for Node.js install: ${PLATFORM}" ;;
+  esac
+
+  if ! node_arch="$(resolve_node_arch)"; then
+    fail "Unsupported CPU architecture for Node.js install: $(uname -m)"
+  fi
+
+  node_version="$(latest_node_lts_version || true)"
+  node_version="${node_version:-v22.17.1}"
+  node_tarball="node-${node_version}-${node_os}-${node_arch}.tar.gz"
+  node_url="https://nodejs.org/dist/${node_version}/${node_tarball}"
+
+  extract_dir="$(mktemp -d)"
+  trap 'rm -rf "${extract_dir}"' RETURN
+
+  info "Downloading ${node_tarball}..."
+  curl -fsSL "$node_url" -o "${extract_dir}/${node_tarball}" || fail "Failed to download Node.js from ${node_url}"
+
+  info "Extracting Node.js..."
+  tar -xzf "${extract_dir}/${node_tarball}" -C "${extract_dir}" || fail "Failed to extract Node.js archive"
+
+  node_dir="${extract_dir}/node-${node_version}-${node_os}-${node_arch}"
+
+  if [[ -w /usr/local/lib && -w /usr/local/bin ]]; then
+    install_root="/usr/local/lib/nodejs"
+    bin_root="/usr/local/bin"
+  elif command -v sudo &>/dev/null; then
+    install_root="/usr/local/lib/nodejs"
+    bin_root="/usr/local/bin"
+    SUDO_CMD="sudo"
+  else
+    install_root="${HOME}/.local/nodejs"
+    bin_root="${HOME}/.local/bin"
+  fi
+
+  info "Installing Node.js ${node_version} for ${node_os}-${node_arch}..."
+  ${SUDO_CMD} mkdir -p "${install_root}" "${bin_root}"
+  ${SUDO_CMD} rm -rf "${install_root}/node-${node_version}"
+  ${SUDO_CMD} cp -R "${node_dir}" "${install_root}/node-${node_version}"
+  ${SUDO_CMD} ln -sf "${install_root}/node-${node_version}/bin/node" "${bin_root}/node"
+  ${SUDO_CMD} ln -sf "${install_root}/node-${node_version}/bin/npm" "${bin_root}/npm"
+  ${SUDO_CMD} ln -sf "${install_root}/node-${node_version}/bin/npx" "${bin_root}/npx"
+  ${SUDO_CMD} ln -sf "${install_root}/node-${node_version}/bin/corepack" "${bin_root}/corepack"
+
+  export PATH="${bin_root}:$PATH"
+
+  if ! command -v node &>/dev/null; then
+    fail "Node.js install completed but node is still not available in PATH"
+  fi
+
+  ok "Node.js installed: $(node --version)"
+  ok "npm installed: $(npm --version)"
+}
+
 # Git
 if ! command -v git &>/dev/null; then
   install_pkg git
@@ -82,6 +169,9 @@ ok "Git found: $(git --version)"
 if ! command -v curl &>/dev/null; then
   install_pkg curl
 fi
+
+# Node.js (required for local dashboard build)
+install_node
 
 # Docker Engine
 if ! command -v docker &>/dev/null; then
@@ -266,12 +356,10 @@ fi
 
 # ── Build dashboard ──────────────────────────
 
-if command -v node &>/dev/null && [[ -d "dashboard" ]]; then
+if [[ -d "dashboard" ]]; then
   info "Building dashboard..."
   (cd dashboard && npm install --silent && npm run build --silent) 2>&1 | tail -3
   ok "Dashboard built"
-else
-  warn "Node.js not found locally — dashboard will be built inside Docker"
 fi
 
 # ── Install boot/startup hook ───────────────────────────────────────────────
