@@ -22,7 +22,7 @@ const logger = require('../logger');
  * stagingHost: optional fully-qualified hostname (e.g. "acme.dev.example.com")
  * that the public service should also respond to. Gets its own LE cert.
  */
-function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides, stagingHost, proxyNetwork }) {
+function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides, stagingHost, proxyNetwork, staticPorts, lanBindIp }) {
   if (!publicService || !domain) {
     throw new Error('publicService and domain are required for compose override');
   }
@@ -166,6 +166,38 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
       }
       override.services[service].image = imageTag;
       override.services[service].pull_policy = 'always';
+    }
+  }
+
+  // Static LAN port bindings. Each opts a single service into a fixed host-port
+  // binding so it's reachable directly over the LAN at <lanBindIp>:<hostPort>.
+  // Normally Beachhead publishes no host ports (nginx-proxy routes by Host
+  // header) and stripHostPorts() removes any from the app's compose file — these
+  // managed bindings are the only host ports on the container.
+  if (staticPorts && staticPorts.length > 0) {
+    for (const sp of staticPorts) {
+      const hostPort = sp.hostPort || sp.host_port;
+      const containerPort = sp.containerPort || sp.container_port || 80;
+      if (!sp.service || !hostPort) continue;
+
+      // Bind to the LAN IP only when configured (true LAN-only exposure);
+      // otherwise publish on all interfaces.
+      const mapping = lanBindIp
+        ? `${lanBindIp}:${hostPort}:${containerPort}`
+        : `${hostPort}:${containerPort}`;
+
+      if (!override.services[sp.service]) {
+        override.services[sp.service] = {
+          container_name: `${slug}-${sp.service}${suffix}`,
+          restart: 'unless-stopped',
+        };
+      }
+      if (!Array.isArray(override.services[sp.service].ports)) {
+        override.services[sp.service].ports = [];
+      }
+      if (!override.services[sp.service].ports.includes(mapping)) {
+        override.services[sp.service].ports.push(mapping);
+      }
     }
   }
 

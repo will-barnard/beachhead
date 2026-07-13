@@ -3,6 +3,7 @@ const path = require('path');
 const Deployments = require('../models/deployments');
 const Apps = require('../models/apps');
 const AppEndpoints = require('../models/appEndpoints');
+const ServicePorts = require('../models/servicePorts');
 const StaticSites = require('../models/staticSites');
 const EnvVars = require('../models/envVars');
 const { EnvFiles } = require('../models/envFiles');
@@ -174,6 +175,11 @@ async function processDeployment(deployment) {
       wwwRedirect: ep.www_redirect || false,
     }));
 
+    // Load static LAN port mappings (opt-in per service). Bind to the
+    // configured LAN IP for true LAN-only exposure.
+    const staticPorts = await ServicePorts.findEnabledByAppId(app.id);
+    const lanBindIp = await Settings.getLanBindIp();
+
     // Compose the staging host (e.g. "acme.dev.example.com") if both the
     // global staging root and the app's staging subdomain are set.
     let stagingHost = null;
@@ -202,6 +208,8 @@ async function processDeployment(deployment) {
       additionalEndpoints,
       stagingHost,
       proxyNetwork: appProxyNetwork,
+      staticPorts,
+      lanBindIp,
     });
     writeOverrideFile(deployDir, overrideContent);
 
@@ -268,6 +276,8 @@ async function processDeployment(deployment) {
           additionalEndpoints,
           imageOverrides,
           proxyNetwork: appProxyNetwork,
+          staticPorts,
+          lanBindIp,
         });
         writeOverrideFile(deployDir, updatedOverride);
         fs.chmodSync(path.join(deployDir, 'beachhead.override.yml'), 0o600);
@@ -303,6 +313,36 @@ async function processDeployment(deployment) {
 
       logger.info(`[deploy #${deployment.id}] Starting stateful services under project '${statefulProject}': ${statefulServices.join(', ')}`);
       await dockerComposeUpStateful(deployDir, statefulProject, statefulServices, 'beachhead.stateful.override.yml');
+    }
+
+    // A published host port is a singleton resource — if the previous
+    // deployment's container is still holding it, the new container can't bind
+    // and `compose up` fails with "port is already allocated". For apps that
+    // opt into static LAN ports we therefore stop the previous deployment
+    // *before* starting the new one (brief downtime on this app only), instead
+    // of relying on the usual post-health blue/green swap. Apps without static
+    // ports keep zero-downtime deploys.
+    if (staticPorts.length > 0 && app.stop_previous !== false) {
+      const prevDepId = app.active_deployment_id;
+      const prevDeployment = prevDepId
+        ? await Deployments.findById(prevDepId)
+        : await Deployments.findLastSuccessful(app.id, deployment.id);
+      if (prevDeployment && prevDeployment.id !== deployment.id) {
+        const prevDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${prevDeployment.id}`);
+        const prevOverride = path.join(prevDir, 'beachhead.override.yml');
+        const prevProjectName = path.basename(prevDir);
+        logger.info(`[deploy #${deployment.id}] Static port(s) configured — stopping previous deployment #${prevDeployment.id} before start to free host port(s)`);
+        try {
+          if (fs.existsSync(prevOverride)) {
+            await dockerComposeDown(prevDir, 'beachhead.override.yml');
+          } else {
+            await stopComposeProject(prevProjectName);
+          }
+        } catch (e) {
+          logger.warn(`[deploy #${deployment.id}] Pre-start stop failed: ${e.message} — falling back to label-based stop`);
+          await stopComposeProject(prevProjectName);
+        }
+      }
     }
 
     // Start only the transient (non-stateful) services under the deploy-specific project.
@@ -414,6 +454,8 @@ async function regenerateOverride({ app, deployment, deployDir, publicService, p
   const additionalEndpoints = endpoints.map(ep => ({
     service: ep.service, domain: ep.domain, port: ep.port || 80, wwwRedirect: ep.www_redirect || false,
   }));
+  const staticPorts = await ServicePorts.findEnabledByAppId(app.id);
+  const lanBindIp = await Settings.getLanBindIp();
   let stagingHost = null;
   if (app.staging_subdomain) {
     const stagingRoot = await Settings.getStagingRootDomain();
@@ -432,6 +474,8 @@ async function regenerateOverride({ app, deployment, deployDir, publicService, p
     additionalEndpoints,
     stagingHost,
     proxyNetwork: proxyNetworkName,
+    staticPorts,
+    lanBindIp,
   });
   writeOverrideFile(deployDir, overrideContent);
   fs.chmodSync(path.join(deployDir, 'beachhead.override.yml'), 0o600);

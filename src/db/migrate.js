@@ -285,6 +285,27 @@ const MIGRATIONS = [
       INSERT INTO settings (key, value) VALUES ('git_https_token', '') ON CONFLICT DO NOTHING;
     `,
   },
+  {
+    name: '024_create_service_ports',
+    sql: `
+      CREATE TABLE IF NOT EXISTS service_ports (
+        id SERIAL PRIMARY KEY,
+        app_id INT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        service TEXT NOT NULL,
+        host_port INT NOT NULL,
+        container_port INT NOT NULL DEFAULT 80,
+        enabled BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(app_id, service)
+      );
+      -- A host port is a singleton host resource: no two enabled mappings may
+      -- claim the same host port across all apps.
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_service_ports_host_port
+        ON service_ports(host_port) WHERE enabled = true;
+      CREATE INDEX IF NOT EXISTS idx_service_ports_app_id ON service_ports(app_id);
+      INSERT INTO settings (key, value) VALUES ('lan_bind_ip', '') ON CONFLICT DO NOTHING;
+    `,
+  },
 ];
 
 async function migrate() {

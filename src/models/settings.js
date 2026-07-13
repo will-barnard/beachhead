@@ -33,6 +33,15 @@ const Settings = {
     return (await this.get('staging_root_domain')) || '';
   },
 
+  /**
+   * LAN IPv4 address that static service ports bind to. When set, published
+   * host ports are bound to this address only (true LAN-only exposure); when
+   * empty, static ports cannot be enabled.
+   */
+  async getLanBindIp() {
+    return (await this.get('lan_bind_ip')) || '';
+  },
+
   async getRegistryConfig() {
     const type = (await this.get('registry_type')) || 'generic';
 

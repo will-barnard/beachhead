@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const Apps = require('../models/apps');
 const AppEndpoints = require('../models/appEndpoints');
+const ServicePorts = require('../models/servicePorts');
 const Deployments = require('../models/deployments');
 const EnvVars = require('../models/envVars');
 const Settings = require('../models/settings');
@@ -445,6 +446,8 @@ async function regenerateOverride(app, dep = null) {
     port: ep.port || 80,
     wwwRedirect: ep.www_redirect || false,
   }));
+  const staticPorts = await ServicePorts.findEnabledByAppId(app.id);
+  const lanBindIp = await Settings.getLanBindIp();
 
   let stagingHost = null;
   if (app.staging_subdomain) {
@@ -483,6 +486,8 @@ async function regenerateOverride(app, dep = null) {
     additionalEndpoints,
     stagingHost,
     proxyNetwork: appProxyNetwork,
+    staticPorts,
+    lanBindIp,
   });
   writeOverrideFile(deployDir, overrideContent);
 
@@ -936,6 +941,161 @@ router.post('/:id/endpoints/:endpointId/www', async (req, res) => {
   } catch (err) {
     logger.error('Failed to enable www for endpoint', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Static LAN ports ──
+
+// Ports that Beachhead's own infrastructure needs — never assignable to apps.
+const RESERVED_HOST_PORTS = new Set([80, 443]);
+
+/**
+ * List the compose services discovered from the app's active deployment.
+ * Empty until the app has been deployed at least once.
+ */
+function listDeployedServices(app) {
+  if (!app.active_deployment_id) return [];
+  const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${app.active_deployment_id}`);
+  try {
+    return readAllServiceNames(deployDir);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * GET /apps/:id/service-ports
+ * Returns the static port mappings, the configured LAN bind IP, and the list
+ * of services in the app's compose file (so the UI can offer a picker).
+ */
+router.get('/:id/service-ports', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+    const ports = await ServicePorts.findByAppId(app.id);
+    res.json({
+      lan_bind_ip: await Settings.getLanBindIp(),
+      ports,
+      services: listDeployedServices(app),
+    });
+  } catch (err) {
+    logger.error('Failed to list service ports', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * PUT /apps/:id/service-ports
+ * Create or update the static port mapping for a service.
+ * Body: { service, host_port, container_port?, enabled? }
+ *
+ * When enabled, binds <lan_bind_ip>:<host_port> -> <container_port>. Requires
+ * lan_bind_ip to be configured (Settings) so the port is only exposed on the
+ * LAN. Applies live to the running deployment when possible.
+ */
+router.put('/:id/service-ports', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+    if (app.system_app) return res.status(400).json({ error: 'Static ports are not available for system apps' });
+
+    const { service, host_port, container_port, enabled } = req.body || {};
+    if (!service || typeof service !== 'string' || !/^[a-zA-Z0-9._-]+$/.test(service)) {
+      return res.status(400).json({ error: 'A valid service name is required' });
+    }
+
+    const isEnabled = enabled !== false;
+    const hostPort = Number(host_port);
+    const containerPort = container_port === undefined || container_port === null || container_port === ''
+      ? 80
+      : Number(container_port);
+
+    if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535) {
+      return res.status(400).json({ error: 'host_port must be an integer between 1 and 65535' });
+    }
+    if (!Number.isInteger(containerPort) || containerPort < 1 || containerPort > 65535) {
+      return res.status(400).json({ error: 'container_port must be an integer between 1 and 65535' });
+    }
+
+    if (isEnabled) {
+      const lanBindIp = await Settings.getLanBindIp();
+      if (!lanBindIp) {
+        return res.status(400).json({ error: 'Set a LAN bind IP in Settings before enabling static ports' });
+      }
+      if (RESERVED_HOST_PORTS.has(hostPort)) {
+        return res.status(400).json({ error: `Port ${hostPort} is reserved by Beachhead (nginx-proxy). Choose another.` });
+      }
+      // Reject collisions with another enabled mapping (across all apps).
+      const existing = await ServicePorts.findByAppService(app.id, service);
+      const clash = await ServicePorts.findEnabledByHostPort(hostPort, existing?.id || null);
+      if (clash) {
+        const owner = await Apps.findById(clash.app_id);
+        return res.status(409).json({
+          error: `Host port ${hostPort} is already assigned to ${owner ? owner.name : 'app #' + clash.app_id} (${clash.service}).`,
+        });
+      }
+    }
+
+    const saved = await ServicePorts.upsert({
+      app_id: app.id,
+      service,
+      host_port: hostPort,
+      container_port: containerPort,
+      enabled: isEnabled,
+    });
+    logger.info(`Static port for ${app.name}/${service}: ${isEnabled ? `${hostPort}->${containerPort} enabled` : 'disabled'}`);
+
+    // Regenerate the override and apply live to the running container.
+    let applied = false;
+    const result = await regenerateOverride(app);
+    if (result) {
+      try {
+        await dockerComposeRecreate(result.deployDir, 'beachhead.override.yml', service);
+        applied = true;
+      } catch (err) {
+        logger.warn(`Could not live-apply static port for ${service}: ${err.message}`);
+      }
+    }
+
+    res.json({ port: saved, applied });
+  } catch (err) {
+    logger.error('Failed to set service port', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * DELETE /apps/:id/service-ports/:portId
+ * Remove a static port mapping entirely and drop the host binding on redeploy.
+ */
+router.delete('/:id/service-ports/:portId', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+
+    const port = await ServicePorts.findById(req.params.portId);
+    if (!port || port.app_id !== app.id) {
+      return res.status(404).json({ error: 'Port mapping not found' });
+    }
+
+    await ServicePorts.delete(port.id);
+    logger.info(`Static port removed for ${app.name}/${port.service}`);
+
+    // Regenerate the override (now without this binding) and recreate the
+    // container so it releases the host port immediately.
+    const result = await regenerateOverride(app);
+    if (result) {
+      try {
+        await dockerComposeRecreate(result.deployDir, 'beachhead.override.yml', port.service);
+      } catch (err) {
+        logger.warn(`Could not live-remove static port for ${port.service}: ${err.message}`);
+      }
+    }
+
+    res.json({ message: 'Port mapping deleted' });
+  } catch (err) {
+    logger.error('Failed to delete service port', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

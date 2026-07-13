@@ -257,6 +257,38 @@
         {{ savingStaging ? 'Saving...' : 'Save Staging Settings' }}
       </button>
     </div>
+
+    <!-- LAN Ports -->
+    <div class="card" style="margin-top: 2rem;">
+      <h3 style="margin-bottom: 1rem;">LAN Ports</h3>
+
+      <div v-if="lanError" style="color: var(--danger); margin-bottom: 0.75rem;">{{ lanError }}</div>
+      <div v-if="lanSuccess" style="color: var(--success); margin-bottom: 0.75rem;">{{ lanSuccess }}</div>
+
+      <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">
+        The LAN IPv4 address that static service ports bind to. When set, any app service you expose on a
+        fixed port (App → LAN Ports) is bound to this address only, so it stays reachable on your local
+        network but not the public internet. Use this machine's LAN IP (e.g. <code>192.168.1.20</code>).
+      </p>
+
+      <div style="max-width: 400px;">
+        <label>LAN Bind IP</label>
+        <input v-model="lanSettings.lan_bind_ip" placeholder="e.g. 192.168.1.20" style="width: 100%;" />
+        <p v-if="lanCandidates.length" style="color: var(--muted); font-size: 0.85rem; margin: 0.4rem 0 0;">
+          Detected on this host:
+          <template v-for="(c, i) in lanCandidates" :key="c.address">
+            <a href="#" @click.prevent="lanSettings.lan_bind_ip = c.address" style="text-decoration: underline;">{{ c.address }}</a><span v-if="i < lanCandidates.length - 1">, </span>
+          </template>
+        </p>
+        <p style="color: var(--muted); font-size: 0.85rem; margin: 0.4rem 0 0;">
+          Leave blank to disable static ports.
+        </p>
+      </div>
+
+      <button class="btn" @click="saveLanSettings" :disabled="savingLan" style="margin-top: 1.5rem;">
+        {{ savingLan ? 'Saving...' : 'Save LAN Settings' }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -302,12 +334,20 @@ export default {
     stagingError: null,
     stagingSuccess: null,
     savingStaging: false,
+    lanSettings: {
+      lan_bind_ip: '',
+    },
+    lanCandidates: [],
+    lanError: null,
+    lanSuccess: null,
+    savingLan: false,
   }),
   async mounted() {
     await this.loadUsers();
     await this.loadBuildSettings();
     await this.loadNetworkSettings();
     await this.loadStagingSettings();
+    await this.loadLanSettings();
     try {
       const status = await api.getBootstrapStatus();
       if (status.user) this.currentUserId = status.user.id;
@@ -458,6 +498,33 @@ export default {
         this.stagingError = e.message;
       } finally {
         this.savingStaging = false;
+      }
+    },
+    async loadLanSettings() {
+      try {
+        const settings = await api.getSettings();
+        this.lanSettings.lan_bind_ip = settings.lan_bind_ip || '';
+      } catch {
+        // settings may not exist yet
+      }
+      try {
+        const info = await api.getNetworkInfo();
+        this.lanCandidates = info.lanCandidates || [];
+      } catch {
+        // non-fatal — just no detected-IP hints
+      }
+    },
+    async saveLanSettings() {
+      this.lanError = null;
+      this.lanSuccess = null;
+      this.savingLan = true;
+      try {
+        await api.updateSettings({ lan_bind_ip: this.lanSettings.lan_bind_ip.trim() });
+        this.lanSuccess = 'LAN settings saved';
+      } catch (e) {
+        this.lanError = e.message;
+      } finally {
+        this.savingLan = false;
       }
     },
   },

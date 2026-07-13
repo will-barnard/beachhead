@@ -238,7 +238,7 @@ router.post('/worker-token', requireAuth, requireSuperAdmin, async (req, res) =>
  * Update settings (admin only). Accepts { key: value } pairs.
  */
 router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
-  const allowed = ['build_mode', 'registry_type', 'registry_url', 'registry_user', 'registry_password', 'ghcr_owner', 'ghcr_token', 'git_ssh_key_path', 'git_https_token', 'network_mode', 'staging_root_domain'];
+  const allowed = ['build_mode', 'registry_type', 'registry_url', 'registry_user', 'registry_password', 'ghcr_owner', 'ghcr_token', 'git_ssh_key_path', 'git_https_token', 'network_mode', 'staging_root_domain', 'lan_bind_ip'];
   const updates = req.body;
 
   if (!updates || typeof updates !== 'object') {
@@ -256,6 +256,18 @@ router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
       }
       if (key === 'network_mode' && !['direct', 'home_network'].includes(value)) {
         return res.status(400).json({ error: 'network_mode must be "direct" or "home_network"' });
+      }
+      if (key === 'lan_bind_ip') {
+        const v = String(value || '').trim();
+        // Allow empty (clear/disable), or a valid IPv4 address.
+        if (v) {
+          const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(v);
+          if (!m || m.slice(1).some((o) => Number(o) > 255)) {
+            return res.status(400).json({ error: 'lan_bind_ip must be a valid IPv4 address (e.g. 192.168.1.20) or empty' });
+          }
+        }
+        await Settings.set(key, v);
+        continue;
       }
       if (key === 'staging_root_domain') {
         const v = String(value || '').trim().toLowerCase();

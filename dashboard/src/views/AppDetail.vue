@@ -393,6 +393,60 @@
       <button v-if="!addingEndpoint" class="btn btn-sm" style="margin-top:0.75rem;" @click="addingEndpoint = true">+ Add Endpoint</button>
     </div>
 
+    <!-- LAN Ports -->
+    <div v-if="app && !app.system_app" class="card">
+      <h3 style="margin-bottom:0.75rem;">LAN Ports</h3>
+      <p style="color:var(--muted); font-size:0.8rem; margin-bottom:0.75rem;">
+        By default apps are reachable only by domain through the proxy — ports are managed automatically.
+        Toggle a service on here to also bind it to a fixed host port, reachable directly over your LAN at a consistent address.
+      </p>
+
+      <div v-if="!servicePorts" style="color:var(--muted); font-size:0.85rem;">Loading…</div>
+      <template v-else>
+        <div v-if="!servicePorts.lan_bind_ip"
+             style="background:var(--warning-bg, #4a3c1a); color:var(--warning, #e0b341); padding:0.5rem 0.75rem; border-radius:6px; font-size:0.8rem; margin-bottom:0.75rem;">
+          No LAN bind IP configured. Set one under
+          <router-link to="/settings" style="text-decoration:underline;">Settings</router-link>
+          before enabling static ports (this keeps ports LAN-only).
+        </div>
+
+        <div v-if="servicePorts.services.length === 0" style="color:var(--muted); font-size:0.85rem;">
+          No services discovered yet — deploy this app first.
+        </div>
+
+        <div v-for="svc in servicePorts.services" :key="svc"
+             style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
+          <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer;">
+            <input type="checkbox" v-model="portForms[svc].enabled" :disabled="savingPortSvc === svc" />
+            <code style="font-size:0.85rem;">{{ svc }}</code>
+            <span v-if="savedPortFor(svc) && savedPortFor(svc).enabled" class="badge badge-success" style="font-size:0.65rem;">
+              {{ servicePorts.lan_bind_ip }}:{{ savedPortFor(svc).host_port }}
+            </span>
+          </label>
+
+          <div v-if="portForms[svc].enabled" style="display:flex; gap:0.5rem; align-items:flex-end; margin:0.5rem 0 0 1.6rem; flex-wrap:wrap;">
+            <div>
+              <label style="font-size:0.72rem; color:var(--muted); display:block;">Host port</label>
+              <input v-model.number="portForms[svc].host_port" type="number" placeholder="8080" style="width:6rem;" />
+            </div>
+            <div>
+              <label style="font-size:0.72rem; color:var(--muted); display:block;">Container port</label>
+              <input v-model.number="portForms[svc].container_port" type="number" placeholder="80" style="width:6rem;" />
+            </div>
+            <button class="btn btn-sm" @click="saveServicePort(svc)"
+                    :disabled="savingPortSvc === svc || !servicePorts.lan_bind_ip || !portForms[svc].host_port">
+              {{ savingPortSvc === svc ? '…' : 'Save' }}
+            </button>
+            <button v-if="savedPortFor(svc)" class="btn btn-danger btn-sm" @click="removeServicePort(svc)"
+                    :disabled="savingPortSvc === svc">Remove</button>
+            <span v-if="portForms[svc].host_port" style="font-size:0.78rem; color:var(--muted); align-self:center;">
+              → http://{{ servicePorts.lan_bind_ip || '&lt;lan-ip&gt;' }}:{{ portForms[svc].host_port }}
+            </span>
+          </div>
+        </div>
+      </template>
+    </div>
+
     <!-- Env Files -->
     <div class="card">
       <h3 style="margin-bottom:0.75rem;">Env Files</h3>
@@ -528,6 +582,9 @@ export default {
     wwwApplying: false,
     addingEndpoint: false,
     newEndpoint: { service: '', domain: '', port: 80 },
+    servicePorts: null,
+    portForms: {},
+    savingPortSvc: null,
     rollingBack: null,
     pruning: false,
     editingSettings: false,
@@ -604,6 +661,11 @@ export default {
           } catch (e) {
             // non-fatal — leave the section in a loading state
             console.warn('Could not load on-demand config:', e.message);
+          }
+          try {
+            await this.loadServicePorts(id);
+          } catch (e) {
+            console.warn('Could not load service ports:', e.message);
           }
         }
         try {
@@ -765,6 +827,57 @@ export default {
         alert('Failed: ' + e.message);
       } finally {
         ep._wwwApplying = false;
+      }
+    },
+    async loadServicePorts(appId) {
+      const data = await api.getServicePorts(appId || this.app.id);
+      this.servicePorts = data;
+      // Build one editable form per discovered service, seeded from any saved mapping.
+      const forms = {};
+      for (const svc of data.services) {
+        const saved = data.ports.find(p => p.service === svc);
+        forms[svc] = {
+          enabled: !!(saved && saved.enabled),
+          host_port: saved ? saved.host_port : '',
+          container_port: saved ? saved.container_port : 80,
+        };
+      }
+      this.portForms = forms;
+    },
+    savedPortFor(svc) {
+      if (!this.servicePorts) return null;
+      return this.servicePorts.ports.find(p => p.service === svc) || null;
+    },
+    async saveServicePort(svc) {
+      const form = this.portForms[svc];
+      if (!form || !form.host_port) return;
+      this.savingPortSvc = svc;
+      try {
+        await api.setServicePort(this.app.id, {
+          service: svc,
+          host_port: form.host_port,
+          container_port: form.container_port || 80,
+          enabled: true,
+        });
+        await this.loadServicePorts(this.app.id);
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      } finally {
+        this.savingPortSvc = null;
+      }
+    },
+    async removeServicePort(svc) {
+      const saved = this.savedPortFor(svc);
+      if (!saved) { this.portForms[svc].enabled = false; return; }
+      if (!confirm(`Remove the static LAN port for ${svc}?`)) return;
+      this.savingPortSvc = svc;
+      try {
+        await api.deleteServicePort(this.app.id, saved.id);
+        await this.loadServicePorts(this.app.id);
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      } finally {
+        this.savingPortSvc = null;
       }
     },
     isActiveDeployment(deployment, index) {

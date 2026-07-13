@@ -8,6 +8,10 @@ const os = require('os');
 const https = require('https');
 const http = require('http');
 
+const WORKER_ENV_PATH = path.join(__dirname, '.env');
+const MANAGED_ENV_HEADER = '# Managed by beachhead-worker config';
+const MANAGED_SERVER_KEY_RE = /^BEACHHEAD_SERVER_(\d+)_(URL|TOKEN|ENABLED)$/;
+
 // ─── Configuration ──────────────────────────────────────────────────
 const CONFIG_DEFAULTS = {
   pollInterval: 5000,
@@ -72,6 +76,18 @@ function loadConfig() {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
+function normalizeEnvValue(value) {
+  const trimmed = (value || '').trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function splitCommaEnv(value) {
+  return normalizeEnvValue(value).split(',').map((item) => item.trim()).filter(Boolean);
+}
+
 function die(msg) {
   console.error(`Error: ${msg}`);
   process.exit(1);
@@ -79,6 +95,297 @@ function die(msg) {
 
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
+}
+
+function maskToken(token) {
+  if (!token) return '<missing>';
+  const tail = token.slice(-6);
+  return `<hidden:${token.length}>...${tail}`;
+}
+
+function parseEnvAssignment(line) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+  const separatorIndex = line.indexOf('=');
+  if (separatorIndex === -1) return null;
+  return {
+    key: line.slice(0, separatorIndex).trim(),
+    value: line.slice(separatorIndex + 1),
+  };
+}
+
+function loadWorkerEnvState(envPath = WORKER_ENV_PATH) {
+  if (!fs.existsSync(envPath)) die(`Worker env file not found: ${envPath}`);
+
+  const raw = fs.readFileSync(envPath, 'utf8');
+  const lines = raw.split(/\r?\n/);
+  const env = {};
+  const managed = new Map();
+
+  for (const line of lines) {
+    const assignment = parseEnvAssignment(line);
+    if (!assignment) continue;
+    env[assignment.key] = normalizeEnvValue(assignment.value);
+
+    const match = assignment.key.match(MANAGED_SERVER_KEY_RE);
+    if (!match) continue;
+
+    const index = Number.parseInt(match[1], 10);
+    const field = match[2];
+    const current = managed.get(index) || { url: '', token: '', enabled: true };
+    if (field === 'URL') current.url = normalizeEnvValue(assignment.value).replace(/\/$/, '');
+    if (field === 'TOKEN') current.token = normalizeEnvValue(assignment.value);
+    if (field === 'ENABLED') current.enabled = /^(1|true|yes)$/i.test(normalizeEnvValue(assignment.value));
+    managed.set(index, current);
+  }
+
+  let servers = [];
+  if (managed.size > 0) {
+    servers = Array.from(managed.entries())
+      .sort((left, right) => left[0] - right[0])
+      .map(([, server]) => ({
+        url: server.url,
+        token: server.token,
+        enabled: server.enabled !== false,
+      }))
+      .filter((server) => server.url || server.token);
+  } else if (env.BEACHHEAD_URLS || env.BEACHHEAD_TOKENS) {
+    const urls = splitCommaEnv(env.BEACHHEAD_URLS || '');
+    const tokens = splitCommaEnv(env.BEACHHEAD_TOKENS || '');
+    if (urls.length !== tokens.length) {
+      die('BEACHHEAD_URLS and BEACHHEAD_TOKENS must have the same number of comma-separated entries in worker/.env');
+    }
+    servers = urls.map((url, index) => ({
+      url: url.replace(/\/$/, ''),
+      token: tokens[index],
+      enabled: true,
+    }));
+  } else if (env.BEACHHEAD_URL || env.BEACHHEAD_TOKEN) {
+    if (!env.BEACHHEAD_URL || !env.BEACHHEAD_TOKEN) {
+      die('BEACHHEAD_URL and BEACHHEAD_TOKEN must both be set when using single-server worker config');
+    }
+    servers = [{
+      url: env.BEACHHEAD_URL.replace(/\/$/, ''),
+      token: env.BEACHHEAD_TOKEN,
+      enabled: true,
+    }];
+  }
+
+  return { envPath, lines, servers };
+}
+
+function saveWorkerEnvState(state) {
+  const activeServers = state.servers.filter((server) => server.enabled && server.url && server.token);
+  const urlLine = `BEACHHEAD_URLS=${activeServers.map((server) => server.url).join(',')}`;
+  const tokenLine = `BEACHHEAD_TOKENS=${activeServers.map((server) => server.token).join(',')}`;
+  const managedLines = [];
+
+  if (state.servers.length > 0) {
+    managedLines.push(MANAGED_ENV_HEADER);
+    state.servers.forEach((server, index) => {
+      const serverNumber = index + 1;
+      managedLines.push(`BEACHHEAD_SERVER_${serverNumber}_URL=${server.url}`);
+      managedLines.push(`BEACHHEAD_SERVER_${serverNumber}_TOKEN=${server.token}`);
+      managedLines.push(`BEACHHEAD_SERVER_${serverNumber}_ENABLED=${server.enabled ? '1' : '0'}`);
+    });
+  }
+
+  const nextLines = [];
+  let wroteUrls = false;
+  let wroteTokens = false;
+
+  for (const line of state.lines) {
+    if (line.trim() === MANAGED_ENV_HEADER) continue;
+
+    const assignment = parseEnvAssignment(line);
+    if (!assignment) {
+      nextLines.push(line);
+      continue;
+    }
+
+    if (MANAGED_SERVER_KEY_RE.test(assignment.key)) continue;
+
+    if (assignment.key === 'BEACHHEAD_URLS') {
+      if (!wroteUrls) {
+        nextLines.push(urlLine);
+        wroteUrls = true;
+      }
+      continue;
+    }
+
+    if (assignment.key === 'BEACHHEAD_TOKENS') {
+      if (!wroteTokens) {
+        nextLines.push(tokenLine);
+        wroteTokens = true;
+      }
+      continue;
+    }
+
+    nextLines.push(line);
+  }
+
+  if (!wroteUrls) nextLines.push(urlLine);
+  if (!wroteTokens) nextLines.push(tokenLine);
+
+  while (nextLines.length > 0 && nextLines[nextLines.length - 1] === '') {
+    nextLines.pop();
+  }
+
+  if (managedLines.length > 0) {
+    nextLines.push('');
+    nextLines.push(...managedLines);
+  }
+
+  fs.writeFileSync(state.envPath, `${nextLines.join('\n')}\n`, 'utf8');
+}
+
+function resolveServerIndex(servers, selector) {
+  if (!selector) die('Missing server selector. Use an index from `config list` or an exact URL.');
+
+  if (/^\d+$/.test(selector)) {
+    const index = Number.parseInt(selector, 10) - 1;
+    if (index < 0 || index >= servers.length) die(`Server index out of range: ${selector}`);
+    return index;
+  }
+
+  const normalized = selector.replace(/\/$/, '');
+  const index = servers.findIndex((server) => server.url === normalized);
+  if (index === -1) die(`No server matched: ${selector}`);
+  return index;
+}
+
+function printManagedServers(state) {
+  if (state.servers.length === 0) {
+    console.log(`No worker servers configured in ${state.envPath}`);
+    return;
+  }
+
+  console.log(`Worker servers in ${state.envPath}:`);
+  state.servers.forEach((server, index) => {
+    const marker = server.enabled ? 'on ' : 'off';
+    console.log(`  ${index + 1}. [${marker}] ${server.url}  ${maskToken(server.token)}`);
+  });
+}
+
+function printConfigUsage() {
+  console.log(`
+Worker env manager
+
+Usage:
+  beachhead-worker config list
+  beachhead-worker config enable <index|url> [--rebuild]
+  beachhead-worker config disable <index|url> [--rebuild]
+  beachhead-worker config toggle <index|url> [--rebuild]
+  beachhead-worker config add <url> <token> [--disabled] [--rebuild]
+  beachhead-worker config remove <index|url> [--rebuild]
+  beachhead-worker config rebuild
+
+Notes:
+  - The command edits worker/.env and keeps BEACHHEAD_URLS / BEACHHEAD_TOKENS in sync.
+  - Per-server settings are stored as BEACHHEAD_SERVER_<n>_* lines so URLs and tokens stay paired.
+  - Use --rebuild to run docker compose up -d --build beachhead-worker after saving.
+  `);
+}
+
+function runStreamingCmd(cmd, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(cmd, args, { stdio: 'inherit', ...opts });
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`${cmd} exited with code ${code}`));
+      } else {
+        resolve();
+      }
+    });
+    proc.on('error', reject);
+  });
+}
+
+async function detectComposeCommand() {
+  try {
+    await runCmd('docker', ['compose', 'version']);
+    return { cmd: 'docker', prefixArgs: ['compose'] };
+  } catch {
+    // Fall through.
+  }
+
+  try {
+    await runCmd('docker-compose', ['version']);
+    return { cmd: 'docker-compose', prefixArgs: [] };
+  } catch {
+    die('Neither `docker compose` nor `docker-compose` is available.');
+  }
+}
+
+async function rebuildWorkerContainer() {
+  const compose = await detectComposeCommand();
+  log('Rebuilding beachhead-worker container...');
+  await runStreamingCmd(compose.cmd, [...compose.prefixArgs, 'up', '-d', '--build', 'beachhead-worker'], { cwd: __dirname });
+  log('beachhead-worker container rebuilt');
+}
+
+async function handleConfigCommand(rawArgs) {
+  const rebuild = rawArgs.includes('--rebuild');
+  const disabled = rawArgs.includes('--disabled');
+  const args = rawArgs.filter((arg) => arg !== '--rebuild' && arg !== '--disabled');
+  const subcommand = args[0] || 'list';
+
+  if (subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
+    printConfigUsage();
+    return;
+  }
+
+  if (subcommand === 'rebuild') {
+    await rebuildWorkerContainer();
+    return;
+  }
+
+  const state = loadWorkerEnvState();
+
+  if (subcommand === 'list') {
+    printManagedServers(state);
+    return;
+  }
+
+  if (subcommand === 'add') {
+    const url = args[1];
+    const token = args[2];
+    if (!url || !token) die('Usage: beachhead-worker config add <url> <token> [--disabled] [--rebuild]');
+    state.servers.push({
+      url: url.replace(/\/$/, ''),
+      token,
+      enabled: !disabled,
+    });
+    saveWorkerEnvState(state);
+    log(`Added worker server ${url}`);
+    if (rebuild) await rebuildWorkerContainer();
+    return;
+  }
+
+  if (subcommand === 'enable' || subcommand === 'disable' || subcommand === 'toggle' || subcommand === 'remove') {
+    const selector = args[1];
+    const index = resolveServerIndex(state.servers, selector);
+    const server = state.servers[index];
+
+    if (subcommand === 'remove') {
+      state.servers.splice(index, 1);
+      saveWorkerEnvState(state);
+      log(`Removed worker server ${server.url}`);
+      if (rebuild) await rebuildWorkerContainer();
+      return;
+    }
+
+    if (subcommand === 'enable') server.enabled = true;
+    if (subcommand === 'disable') server.enabled = false;
+    if (subcommand === 'toggle') server.enabled = !server.enabled;
+
+    saveWorkerEnvState(state);
+    log(`${server.enabled ? 'Enabled' : 'Disabled'} worker server ${server.url}`);
+    if (rebuild) await rebuildWorkerContainer();
+    return;
+  }
+
+  die(`Unknown config command: ${subcommand}`);
 }
 
 /**
@@ -327,6 +634,8 @@ if (command === 'start') {
     if (!had) log('No pending jobs');
     process.exit(0);
   }).catch((e) => die(e.message));
+} else if (command === 'config') {
+  handleConfigCommand(args.slice(1)).catch((e) => die(e.message));
 } else if (command === 'help' || command === '--help' || command === '-h') {
   console.log(`
 beachhead-worker — Remote build worker for Beachhead PaaS
@@ -334,6 +643,7 @@ beachhead-worker — Remote build worker for Beachhead PaaS
 Usage:
   beachhead-worker start       Start the worker loop (default)
   beachhead-worker run-once    Process one job and exit
+  beachhead-worker config      Manage worker/.env server entries and rebuild
   beachhead-worker help        Show this help
 
 Configuration (env vars or ~/.beachhead-worker.json):
@@ -357,6 +667,12 @@ Config file example (~/.beachhead-worker.json):
     ],
     "workerId": "builder-01"
   }
+
+Env management examples:
+  beachhead-worker config list
+  beachhead-worker config disable 2 --rebuild
+  beachhead-worker config enable https://bh1.example.com
+  beachhead-worker config add https://bh3.example.com tok3 --disabled
   `);
 } else {
   die(`Unknown command: ${command}. Run "beachhead-worker help" for usage.`);
