@@ -13,6 +13,12 @@ const logger = require('../logger');
 const router = Router();
 router.use(requireAuth, requireSuperAdmin);
 
+function extractTotalReclaimed(output) {
+  if (!output) return null;
+  const match = output.match(/Total reclaimed space:\s*(.+)/i);
+  return match ? match[1].trim() : null;
+}
+
 // ── Network info ──
 
 /**
@@ -244,6 +250,54 @@ router.post('/prune', async (req, res) => {
     res.json({ totalPruned, keep, details });
   } catch (err) {
     logger.error('System prune failed', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/system/docker-cleanup
+ * Reclaim Docker disk space with `docker system prune -a -f`.
+ * Removes all stopped containers, unused images, networks, and build cache.
+ * Optionally also removes unused volumes when include_volumes=true.
+ */
+router.post('/docker-cleanup', async (req, res) => {
+  const includeVolumes = req.body?.include_volumes === true;
+
+  const args = ['system', 'prune', '-a', '-f'];
+  if (includeVolumes) args.push('--volumes');
+
+  try {
+    let before = null;
+    let after = null;
+    try {
+      const beforeResult = await exec('docker', ['system', 'df'], { timeout: 30000, silent: true });
+      before = beforeResult.stdout?.trim() || null;
+    } catch {
+      // non-fatal
+    }
+
+    const out = await exec('docker', args, { timeout: 300000 });
+    const output = `${out.stdout || ''}${out.stderr || ''}`.trim();
+    const totalReclaimed = extractTotalReclaimed(output);
+
+    try {
+      const afterResult = await exec('docker', ['system', 'df'], { timeout: 30000, silent: true });
+      after = afterResult.stdout?.trim() || null;
+    } catch {
+      // non-fatal
+    }
+
+    logger.info(`Docker cleanup completed via settings (includeVolumes=${includeVolumes}): ${totalReclaimed || 'unknown reclaimed'}`);
+    res.json({
+      includeVolumes,
+      totalReclaimed,
+      output,
+      before,
+      after,
+      message: 'Docker cleanup completed',
+    });
+  } catch (err) {
+    logger.error('Docker cleanup failed', err);
     res.status(500).json({ error: err.message });
   }
 });

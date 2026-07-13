@@ -88,6 +88,7 @@ export default {
   systemPrune: (keep) => request('/system/prune', { method: 'POST', body: { keep } }),
   pruneApp: (appId, keep) => request(`/system/apps/${appId}/prune`, { method: 'POST', body: { keep } }),
   getNetworkInfo: () => request('/system/network-info'),
+  dockerCleanup: (body = {}) => request('/system/docker-cleanup', { method: 'POST', body }),
 
   async uploadStaticSite(id, file) {
     const formData = new FormData();

@@ -289,6 +289,47 @@
         {{ savingLan ? 'Saving...' : 'Save LAN Settings' }}
       </button>
     </div>
+
+    <!-- Docker Disk Cleanup -->
+    <div class="card" style="margin-top: 2rem;">
+      <h3 style="margin-bottom: 1rem;">Docker Disk Cleanup</h3>
+
+      <div v-if="cleanupError" style="color: var(--danger); margin-bottom: 0.75rem;">{{ cleanupError }}</div>
+      <div v-if="cleanupSuccess" style="color: var(--success); margin-bottom: 0.75rem;">{{ cleanupSuccess }}</div>
+
+      <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">
+        Runs <code>docker system prune -a</code> on this VM, removing all stopped containers,
+        unused images (including old build layers), unused networks, and build cache.
+        Running containers and their images are not affected.
+      </p>
+
+      <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; margin-bottom: 1rem;">
+        <input type="checkbox" v-model="cleanupIncludeVolumes" />
+        Also remove unused Docker volumes (<code>--volumes</code>)
+      </label>
+
+      <button class="btn btn-danger" @click="runDockerCleanup" :disabled="runningCleanup">
+        {{ runningCleanup ? 'Cleaning...' : 'Run Docker Cleanup' }}
+      </button>
+
+      <div v-if="cleanupSummary" style="margin-top: 1.25rem;">
+        <p style="margin: 0 0 0.75rem; font-size: 0.9rem;">
+          <strong>Cleanup complete</strong>
+          <span v-if="cleanupSummary.totalReclaimed" style="color: var(--success); margin-left: 0.5rem; font-weight: 600;">— {{ cleanupSummary.totalReclaimed }} reclaimed</span>
+          <span v-else style="color: var(--muted); margin-left: 0.5rem;">— nothing to reclaim</span>
+        </p>
+        <div v-if="cleanupSummary.before || cleanupSummary.after" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <div v-if="cleanupSummary.before">
+            <div style="color: var(--muted); font-size: 0.75rem; margin-bottom: 0.25rem;">Before</div>
+            <pre style="margin: 0; font-size: 0.75rem;">{{ cleanupSummary.before }}</pre>
+          </div>
+          <div v-if="cleanupSummary.after">
+            <div style="color: var(--muted); font-size: 0.75rem; margin-bottom: 0.25rem;">After</div>
+            <pre style="margin: 0; font-size: 0.75rem;">{{ cleanupSummary.after }}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -341,6 +382,11 @@ export default {
     lanError: null,
     lanSuccess: null,
     savingLan: false,
+    cleanupIncludeVolumes: false,
+    runningCleanup: false,
+    cleanupError: null,
+    cleanupSuccess: null,
+    cleanupSummary: null,
   }),
   async mounted() {
     await this.loadUsers();
@@ -525,6 +571,27 @@ export default {
         this.lanError = e.message;
       } finally {
         this.savingLan = false;
+      }
+    },
+    async runDockerCleanup() {
+      this.cleanupError = null;
+      this.cleanupSuccess = null;
+      this.cleanupSummary = null;
+
+      const volumeWarning = this.cleanupIncludeVolumes
+        ? ' This will also remove any unused Docker volumes.'
+        : '';
+      if (!confirm(`Run Docker cleanup now?${volumeWarning} Running containers are not removed.`)) return;
+
+      this.runningCleanup = true;
+      try {
+        const result = await api.dockerCleanup({ include_volumes: this.cleanupIncludeVolumes });
+        this.cleanupSummary = result;
+        this.cleanupSuccess = 'Docker cleanup completed';
+      } catch (e) {
+        this.cleanupError = e.message;
+      } finally {
+        this.runningCleanup = false;
       }
     },
   },
