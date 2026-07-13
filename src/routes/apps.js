@@ -485,6 +485,7 @@ async function regenerateOverride(app, dep = null) {
     statefulNetwork,
     additionalEndpoints,
     stagingHost,
+    stagingOnly: app.staging_only || false,
     proxyNetwork: appProxyNetwork,
     staticPorts,
     lanBindIp,
@@ -598,6 +599,81 @@ router.put('/:id/staging', async (req, res) => {
     res.json({ message: sub ? `Staging URL set to ${fullUrl}` : 'Staging URL cleared', app, staging_url: fullUrl });
   } catch (err) {
     logger.error('Failed to update staging subdomain', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * PUT /apps/:id/staging-only
+ * Toggle "staging-only" mode. When enabled, the app's primary domain (and its
+ * www mirror) are taken offline and the app is served exclusively at its
+ * staging host — useful while a client hasn't yet completed payment. Disabling
+ * restores the primary domain.
+ *
+ * Body:
+ *   staging_only: boolean            — required
+ *   clear_staging: boolean (optional) — when disabling, also clear the staging
+ *                                       subdomain in the same operation ("go
+ *                                       live": real domain on, staging off).
+ *
+ * Enabling requires the app to already have a staging_subdomain set and a
+ * configured staging_root_domain, so there's a live hostname to fall back to.
+ */
+router.put('/:id/staging-only', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+
+    const stagingOnly = req.body?.staging_only;
+    if (typeof stagingOnly !== 'boolean') {
+      return res.status(400).json({ error: 'staging_only (boolean) is required' });
+    }
+    const clearStaging = req.body?.clear_staging === true;
+
+    if (stagingOnly) {
+      // Can't take the main domain offline unless there's a staging host to serve.
+      if (!app.staging_subdomain) {
+        return res.status(400).json({ error: 'Set a staging subdomain before enabling staging-only mode' });
+      }
+      const stagingRoot = await Settings.getStagingRootDomain();
+      if (!stagingRoot) {
+        return res.status(400).json({ error: 'staging_root_domain is not configured — set it in Settings first' });
+      }
+    }
+
+    const updates = { staging_only: stagingOnly };
+    // "Go live": disabling staging-only and clearing the staging subdomain in one step.
+    if (!stagingOnly && clearStaging) updates.staging_subdomain = null;
+
+    const updated = await Apps.update(app.id, updates);
+    Object.assign(app, updated);
+
+    // Apply live unless paused (paused placeholder picks up hosts on unpause).
+    if (!app.paused) {
+      const result = await regenerateOverride(app);
+      if (result) {
+        try {
+          await dockerComposeRecreate(result.deployDir, 'beachhead.override.yml', result.publicService);
+        } catch (err) {
+          logger.warn(`Staging-only: could not live-update container: ${err.message}`);
+        }
+      }
+    }
+
+    const stagingRoot = await Settings.getStagingRootDomain();
+    const stagingUrl = app.staging_subdomain && stagingRoot ? `${app.staging_subdomain}.${stagingRoot}` : null;
+    let message;
+    if (stagingOnly) {
+      message = `Staging-only enabled — ${app.domain} is offline; serving ${stagingUrl}`;
+    } else if (clearStaging) {
+      message = `Live — ${app.domain} is serving; staging URL cleared`;
+    } else {
+      message = `Staging-only disabled — ${app.domain} is live again`;
+    }
+    logger.info(`[app ${app.name}] ${message}`);
+    res.json({ message, app: sanitizeApp(app), staging_url: stagingUrl });
+  } catch (err) {
+    logger.error('Failed to update staging-only mode', err);
     res.status(500).json({ error: err.message });
   }
 });

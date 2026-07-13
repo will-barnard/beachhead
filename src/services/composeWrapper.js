@@ -22,7 +22,7 @@ const logger = require('../logger');
  * stagingHost: optional fully-qualified hostname (e.g. "acme.dev.example.com")
  * that the public service should also respond to. Gets its own LE cert.
  */
-function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides, stagingHost, proxyNetwork, staticPorts, lanBindIp }) {
+function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides, stagingHost, stagingOnly, proxyNetwork, staticPorts, lanBindIp }) {
   if (!publicService || !domain) {
     throw new Error('publicService and domain are required for compose override');
   }
@@ -58,9 +58,19 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
   // Order: primary domain, optional www mirror, optional staging URL.
   // De-dupe so we never double-list a hostname (defensive — shouldn't happen,
   // but staging_subdomain validation may not catch every collision).
-  const hostList = [domain];
-  if (wwwRedirect) hostList.push(`www.${domain}`);
-  if (stagingHost && !hostList.includes(stagingHost)) hostList.push(stagingHost);
+  // Staging-only mode: temporarily take the primary domain (and its www mirror)
+  // offline and serve the app exclusively at its staging host — used while a
+  // client hasn't yet paid / the real domain isn't ready to go live. Requires a
+  // staging host to exist; without one we fall back to the normal host list so
+  // we never accidentally leave the app with no hostnames at all.
+  let hostList;
+  if (stagingOnly && stagingHost) {
+    hostList = [stagingHost];
+  } else {
+    hostList = [domain];
+    if (wwwRedirect) hostList.push(`www.${domain}`);
+    if (stagingHost && !hostList.includes(stagingHost)) hostList.push(stagingHost);
+  }
   const primaryHosts = hostList.join(',');
 
   const override = {

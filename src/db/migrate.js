@@ -306,6 +306,12 @@ const MIGRATIONS = [
       INSERT INTO settings (key, value) VALUES ('lan_bind_ip', '') ON CONFLICT DO NOTHING;
     `,
   },
+  {
+    name: '025_add_staging_only_to_apps',
+    sql: `
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS staging_only BOOLEAN DEFAULT false;
+    `,
+  },
 ];
 
 async function migrate() {

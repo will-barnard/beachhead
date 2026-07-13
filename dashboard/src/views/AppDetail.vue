@@ -304,6 +304,7 @@
       <h3 style="margin-bottom:0.75rem;">
         Staging URL
         <span v-if="app.staging_subdomain && stagingRootDomain" class="badge badge-success" style="margin-left:0.5rem; font-size:0.65rem;">Active</span>
+        <span v-if="app.staging_only" class="badge badge-warning" style="margin-left:0.5rem; font-size:0.65rem;">Staging-only</span>
       </h3>
       <p style="color:var(--muted); font-size:0.85rem; margin-bottom:0.75rem;">
         Expose this app at a temporary subdomain of the global staging root, alongside its primary domain.
@@ -347,6 +348,36 @@
             <button v-if="app.staging_subdomain" class="btn btn-warning" @click="clearStaging" :disabled="settingStaging">
               {{ settingStaging && stagingMode === 'clear' ? 'Clearing…' : 'Clear' }}
             </button>
+          </div>
+        </div>
+
+        <!-- Staging-only mode -->
+        <div v-if="app.staging_subdomain" style="margin-top:1rem; padding-top:0.85rem; border-top:1px solid var(--border);">
+          <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:0.75rem; flex-wrap:wrap;">
+            <div style="flex:1; min-width:220px; font-size:0.85rem;">
+              <strong>Staging-only mode</strong>
+              <span v-if="app.staging_only" class="badge badge-warning" style="margin-left:0.5rem; font-size:0.65rem;">Main domain offline</span>
+              <p style="color:var(--muted); font-size:0.78rem; margin:0.3rem 0 0;">
+                <template v-if="app.staging_only">
+                  <strong>{{ app.domain }}</strong> is offline — only the staging URL responds. Click “Go Live” once the client is ready to switch the real domain on.
+                </template>
+                <template v-else>
+                  Temporarily take <strong>{{ app.domain }}</strong> offline and serve this app only at its staging URL — e.g. while a client hasn’t completed payment.
+                </template>
+              </p>
+            </div>
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+              <button v-if="!app.staging_only" class="btn btn-warning" @click="enableStagingOnly" :disabled="stagingOnlyBusy">
+                {{ stagingOnlyBusy ? '…' : 'Serve staging only' }}
+              </button>
+              <button v-else class="btn" @click="disableStagingOnly" :disabled="stagingOnlyBusy">
+                {{ stagingOnlyBusy ? '…' : 'Restore main domain' }}
+              </button>
+              <button class="btn" @click="goLive" :disabled="stagingOnlyBusy"
+                      title="Bring the main domain live and clear the staging URL">
+                {{ stagingOnlyBusy ? '…' : 'Go Live' }}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -600,6 +631,7 @@ export default {
     stagingForm: { subdomain: '' },
     settingStaging: false,
     stagingMode: null,
+    stagingOnlyBusy: false,
     onDemand: null,
     onDemandForm: {
       on_demand: false,
@@ -1054,6 +1086,42 @@ export default {
       } finally {
         this.settingStaging = false;
         this.stagingMode = null;
+      }
+    },
+    async enableStagingOnly() {
+      if (!confirm(`Take ${this.app.domain} offline and serve this app only at its staging URL?\n\nThe main domain will stop responding until you restore it or go live.`)) return;
+      this.stagingOnlyBusy = true;
+      try {
+        await api.setStagingOnly(this.app.id, { staging_only: true });
+        await this.load();
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      } finally {
+        this.stagingOnlyBusy = false;
+      }
+    },
+    async disableStagingOnly() {
+      this.stagingOnlyBusy = true;
+      try {
+        await api.setStagingOnly(this.app.id, { staging_only: false });
+        await this.load();
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      } finally {
+        this.stagingOnlyBusy = false;
+      }
+    },
+    async goLive() {
+      if (!confirm(`Go live?\n\n${this.app.domain} will start serving and the staging URL will be cleared.`)) return;
+      this.stagingOnlyBusy = true;
+      try {
+        await api.setStagingOnly(this.app.id, { staging_only: false, clear_staging: true });
+        this.stagingForm.subdomain = '';
+        await this.load();
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      } finally {
+        this.stagingOnlyBusy = false;
       }
     },
     async rollback(dep) {

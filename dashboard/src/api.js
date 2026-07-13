@@ -38,6 +38,7 @@ export default {
   updateOnDemand: (id, body) => request(`/apps/${id}/on-demand`, { method: 'PUT', body }),
   triggerAutoPause: (id) => request(`/apps/${id}/auto-pause`, { method: 'POST', body: {} }),
   setStaging: (id, body) => request(`/apps/${id}/staging`, { method: 'PUT', body: body || {} }),
+  setStagingOnly: (id, body) => request(`/apps/${id}/staging-only`, { method: 'PUT', body: body || {} }),
   getEndpoints: (appId) => request(`/apps/${appId}/endpoints`),
   addEndpoint: (appId, data) => request(`/apps/${appId}/endpoints`, { method: 'POST', body: data }),
   deleteEndpoint: (appId, endpointId) => request(`/apps/${appId}/endpoints/${endpointId}`, { method: 'DELETE' }),
