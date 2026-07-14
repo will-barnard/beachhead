@@ -49,16 +49,21 @@ function primaryDomain(cert) {
  * Render the acme-companion user-data file from all standalone cert rows.
  */
 function generateUserData(certs) {
+  const ids = certs.map(identifierFor);
+  const idList = ids.map(bashQuote).join(' ');
   const lines = [
     '# Managed by Beachhead — do not edit by hand.',
-    '# acme-companion standalone certificate definitions (ACME_STANDALONE_CERTS).',
+    '# acme-companion standalone certificate definitions.',
+    '# Both the legacy LETSENCRYPT_* names (read by the service loop, incl. v2.4)',
+    '# and the newer ACME_* aliases are emitted so this works across versions.',
     '',
+    `LETSENCRYPT_STANDALONE_CERTS=(${idList})`,
+    `ACME_STANDALONE_CERTS=(${idList})`,
   ];
-  const ids = certs.map(identifierFor);
-  lines.push(`ACME_STANDALONE_CERTS=(${ids.map(bashQuote).join(' ')})`);
   for (const cert of certs) {
     const id = identifierFor(cert);
     const hosts = (cert.domains || []).map(bashQuote).join(' ');
+    lines.push(`LETSENCRYPT_${id}_HOST=(${hosts})`);
     lines.push(`ACME_${id}_HOST=(${hosts})`);
   }
   lines.push('');
