@@ -28,6 +28,15 @@ const config = {
     timeout: parseInt(process.env.HEALTH_CHECK_TIMEOUT, 10) || 120000,
     interval: parseInt(process.env.HEALTH_CHECK_INTERVAL, 10) || 3000,
   },
+
+  // Standalone (app-independent) certificate management. Beachhead writes the
+  // acme-companion user-data file and reads issued certs from the shared certs
+  // volume so they can be downloaded and installed on other machines (e.g. a NAS).
+  certs: {
+    dir: process.env.CERTS_DIR || '/etc/nginx/certs',
+    userDataPath: process.env.ACME_USER_DATA_PATH || '/app/nginx-host/letsencrypt_user_data',
+    acmeContainer: process.env.ACME_CONTAINER || 'beachhead-letsencrypt',
+  },
 };
 
 module.exports = config;

@@ -57,6 +57,35 @@ export default {
   deleteEnvFile: (appId, fileId) => request(`/apps/${appId}/env-files/${fileId}`, { method: 'DELETE' }),
   getHealth: () => request('/health'),
 
+  // Standalone certificates (not tied to an app)
+  getCerts: () => request('/certs'),
+  createCert: (data) => request('/certs', { method: 'POST', body: data }),
+  deleteCert: (id) => request(`/certs/${id}`, { method: 'DELETE' }),
+  refreshCert: (id) => request(`/certs/${id}/refresh`, { method: 'POST', body: {} }),
+  async downloadCert(id, type) {
+    const res = await fetch(`${BASE}/certs/${id}/download/${type}`);
+    if (res.status === 401) {
+      window.location.href = '/login';
+      throw new Error('Authentication required');
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.error || `Download failed: ${res.status}`);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    const filename = match ? match[1] : `${type}.pem`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+
   // Auth
   getBootstrapStatus: () => request('/bootstrap/status'),
   setupAdmin: (data) => request('/bootstrap/setup', { method: 'POST', body: data }),

@@ -312,6 +312,17 @@ const MIGRATIONS = [
       ALTER TABLE apps ADD COLUMN IF NOT EXISTS staging_only BOOLEAN DEFAULT false;
     `,
   },
+  {
+    name: '026_create_standalone_certs',
+    sql: `
+      CREATE TABLE IF NOT EXISTS standalone_certs (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        domains TEXT[] NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `,
+  },
 ];
 
 async function migrate() {

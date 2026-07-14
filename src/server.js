@@ -18,6 +18,7 @@ const webhooksRouter = require('./routes/webhooks');
 const bootstrapRouter = require('./routes/bootstrap');
 const staticSitesRouter = require('./routes/staticSites');
 const systemRouter = require('./routes/system');
+const certsRouter = require('./routes/certs');
 const jobsRouter = require('./routes/jobs');
 const wakeRouter = require('./routes/wake');
 
@@ -70,6 +71,7 @@ app.use('/api/apps', envFilesRouter);
 app.use('/api/bootstrap', bootstrapRouter);
 app.use('/api/static-sites', staticSitesRouter);
 app.use('/api/system', systemRouter);
+app.use('/api/certs', certsRouter);
 app.use('/api/jobs', jobsRouter);
 
 // Health endpoint
@@ -131,6 +133,16 @@ async function start() {
       activityTracker.start();
     } catch (err) {
       logger.error(`Activity tracker failed to start: ${err.message}`);
+    }
+
+    // Regenerate the acme-companion standalone-cert user-data file from the DB
+    // so it self-heals after a stack recreate (the file lives on a bind mount
+    // that may be reset). Best-effort — never block startup on it.
+    try {
+      const certs = require('./services/certs');
+      await certs.writeUserData();
+    } catch (err) {
+      logger.warn(`Could not write standalone cert user-data on startup: ${err.message}`);
     }
 
     // Start deployment worker
