@@ -24,7 +24,6 @@ services:
       - LETSENCRYPT_HOST=${BEACHHEAD_DOMAIN}
       # Standalone (app-independent) certificate management
       - CERTS_DIR=/etc/nginx/certs
-      - ACME_USER_DATA_PATH=/app/nginx-host/letsencrypt_user_data
       - ACME_CONTAINER=beachhead-letsencrypt
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -35,10 +34,10 @@ services:
       - ./nginx/vhost.d:/etc/nginx/vhost.d
       # Read the issued Let's Encrypt certificates so Beachhead can serve
       # standalone certs (not tied to any app) for download. Read-only.
+      # Beachhead delivers the acme-companion standalone-cert config into the
+      # acme container via `docker cp` (docker.sock), so no config bind mount
+      # is needed here.
       - certs:/etc/nginx/certs:ro
-      # Read-write access to the ./nginx dir so Beachhead can (re)write the
-      # acme-companion standalone-cert config file (letsencrypt_user_data).
-      - ./nginx:/app/nginx-host
       # Read nginx-proxy's access log (shared volume below) for the
       # on-demand activity tracker.
       - nginx-activity:/var/log/nginx-activity:ro
@@ -106,9 +105,9 @@ services:
       - conf:/etc/nginx/conf.d
       - html:/usr/share/nginx/html
       - acme:/etc/acme.sh
-      # Beachhead-managed list of standalone certificates (domains not tied to
-      # any proxied container). acme-companion issues + auto-renews these.
-      - ./nginx/letsencrypt_user_data:/app/letsencrypt_user_data:ro
+      # Beachhead delivers the standalone-cert list (ACME_STANDALONE_CERTS) into
+      # this container at /app/letsencrypt_user_data via `docker cp` — no bind
+      # mount needed (avoids host file permission/inode issues).
     depends_on:
       - nginx-proxy
     networks:

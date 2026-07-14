@@ -135,15 +135,17 @@ async function start() {
       logger.error(`Activity tracker failed to start: ${err.message}`);
     }
 
-    // Regenerate the acme-companion standalone-cert user-data file from the DB
-    // so it self-heals after a stack recreate (the file lives on a bind mount
-    // that may be reset). Best-effort — never block startup on it.
-    try {
-      const certs = require('./services/certs');
-      await certs.writeUserData();
-    } catch (err) {
-      logger.warn(`Could not write standalone cert user-data on startup: ${err.message}`);
-    }
+    // Push the acme-companion standalone-cert config from the DB into the acme
+    // container so it self-heals after a stack recreate. Runs in the background
+    // with retries (acme-companion may still be starting). Never blocks startup.
+    (async () => {
+      try {
+        const certs = require('./services/certs');
+        await certs.syncOnStartup();
+      } catch (err) {
+        logger.warn(`Could not sync standalone cert config on startup: ${err.message}`);
+      }
+    })();
 
     // Start deployment worker
     worker.start();

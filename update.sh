@@ -24,9 +24,6 @@ ok "Repository up to date"
 # ── Rebuild and restart ───────────────────────
 
 info "Rebuilding and restarting Beachhead (zero-downtime swap)..."
-# Ensure the acme-companion standalone-cert config exists as a FILE before
-# compose up — a bind mount of a missing path would create a directory instead.
-[ -e nginx/letsencrypt_user_data ] || touch nginx/letsencrypt_user_data
 docker compose pull --quiet --ignore-buildable || true   # pull updated base images (skips build-only services)
 docker compose up -d --build --remove-orphans
 ok "Beachhead updated and running"

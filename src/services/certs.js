@@ -1,4 +1,5 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { exec } = require('./docker');
@@ -65,15 +66,36 @@ function generateUserData(certs) {
 }
 
 /**
- * Write the user-data file to the path acme-companion reads (via bind mount).
+ * Push the generated user-data file straight into the acme-companion container
+ * at the path it reads (`/app/letsencrypt_user_data`), using `docker cp`.
+ *
+ * We deliberately avoid bind-mounting this file from the host: a single-file
+ * bind mount can't be atomically replaced (the container pins the original
+ * inode) and overwriting a host-owned file in place fails with EACCES under
+ * Docker Desktop's file sharing. `docker cp` writes into the acme container's
+ * own filesystem as root, sidestepping both problems entirely.
+ *
+ * Best-effort: returns false (rather than throwing) if acme-companion isn't
+ * reachable yet, so callers — including request handlers — don't fail.
  */
-async function writeUserData() {
+async function pushUserData() {
   const certs = await StandaloneCerts.findAll();
   const content = generateUserData(certs);
-  fs.writeFileSync(config.certs.userDataPath, content, 'utf8');
-  try { fs.chmodSync(config.certs.userDataPath, 0o600); } catch { /* best-effort */ }
-  logger.info(`Wrote acme standalone user-data (${certs.length} cert def(s)) to ${config.certs.userDataPath}`);
-  return content;
+
+  // Write to Beachhead's own (always-writable) temp dir first.
+  const tmpPath = path.join(os.tmpdir(), 'beachhead-letsencrypt_user_data');
+  fs.writeFileSync(tmpPath, content, 'utf8');
+
+  try {
+    await exec('docker', ['cp', tmpPath, `${config.certs.acmeContainer}:${config.certs.acmeUserDataPath}`], { timeout: 30000, silent: true });
+    logger.info(`Copied acme standalone user-data (${certs.length} cert def(s)) into ${config.certs.acmeContainer}`);
+    return true;
+  } catch (err) {
+    logger.warn(`Could not copy standalone user-data into acme-companion (${config.certs.acmeContainer}): ${err.message}`);
+    return false;
+  } finally {
+    try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
+  }
 }
 
 /**
@@ -92,10 +114,24 @@ async function signalAcme() {
   }
 }
 
-/** Write the user-data file and signal acme-companion. */
+/** Push the user-data into acme-companion and signal it to reload. */
 async function sync() {
-  await writeUserData();
-  return signalAcme();
+  const pushed = await pushUserData();
+  if (pushed) return signalAcme();
+  return false;
+}
+
+/**
+ * Startup sync with a few retries — on a cold `compose up`, acme-companion may
+ * still be starting when Beachhead boots. Best-effort; never throws.
+ */
+async function syncOnStartup(attempts = 3, delayMs = 5000) {
+  for (let i = 0; i < attempts; i++) {
+    const ok = await sync();
+    if (ok) return true;
+    if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs));
+  }
+  return false;
 }
 
 function certFilePath(cert, key) {
@@ -165,9 +201,10 @@ function getDownload(cert, key) {
 module.exports = {
   identifierFor,
   generateUserData,
-  writeUserData,
+  pushUserData,
   signalAcme,
   sync,
+  syncOnStartup,
   getStatus,
   withStatus,
   getDownload,

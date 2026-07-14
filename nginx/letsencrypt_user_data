@@ -1,3 +1,5 @@
-# Managed by Beachhead — do not edit by hand.
-# acme-companion standalone certificate definitions (ACME_STANDALONE_CERTS).
-# Beachhead rewrites this file whenever standalone certs are added or removed.
+# DEPRECATED / UNUSED.
+# Beachhead no longer bind-mounts this file. The acme-companion standalone-cert
+# list is now delivered directly into the acme container via `docker cp`
+# (see src/services/certs.js). This file is kept only to avoid a dangling
+# reference and can be safely deleted.

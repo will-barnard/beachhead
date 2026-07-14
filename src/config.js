@@ -34,7 +34,9 @@ const config = {
   // volume so they can be downloaded and installed on other machines (e.g. a NAS).
   certs: {
     dir: process.env.CERTS_DIR || '/etc/nginx/certs',
-    userDataPath: process.env.ACME_USER_DATA_PATH || '/app/nginx-host/letsencrypt_user_data',
+    // Path acme-companion reads inside its OWN container; Beachhead delivers the
+    // file there via `docker cp` (no host bind mount — avoids permission/inode issues).
+    acmeUserDataPath: process.env.ACME_USER_DATA_PATH || '/app/letsencrypt_user_data',
     acmeContainer: process.env.ACME_CONTAINER || 'beachhead-letsencrypt',
   },
 };
