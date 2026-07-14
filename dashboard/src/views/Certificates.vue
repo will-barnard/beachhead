@@ -91,8 +91,17 @@
         </div>
 
         <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
-          <button class="btn btn-sm" :disabled="!cert.status.issued || busy === cert.id" @click="download(cert, 'fullchain')">
+          <button class="btn btn-sm" :disabled="!cert.status.issued || busy === cert.id" @click="download(cert, 'fullchain')"
+                  title="Leaf + intermediate in one file">
             ↓ Full chain
+          </button>
+          <button class="btn btn-sm" :disabled="!cert.status.issued || busy === cert.id" @click="download(cert, 'cert')"
+                  title="Leaf certificate only (for importers that want cert + intermediate separately)">
+            ↓ Cert only
+          </button>
+          <button class="btn btn-sm" :disabled="!cert.status.issued || busy === cert.id" @click="download(cert, 'chain')"
+                  title="Intermediate (CA) chain only">
+            ↓ Chain
           </button>
           <button class="btn btn-sm" :disabled="!cert.status.issued || busy === cert.id" @click="download(cert, 'key')">
             ↓ Private key
