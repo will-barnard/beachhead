@@ -87,12 +87,12 @@ async function pushUserData() {
   fs.writeFileSync(tmpPath, content, 'utf8');
 
   try {
-    await exec('docker', ['cp', tmpPath, `${config.certs.acmeContainer}:${config.certs.acmeUserDataPath}`], { timeout: 30000, silent: true });
+    await exec('docker', ['cp', tmpPath, `${config.certs.acmeContainer}:${config.certs.acmeUserDataPath}`], { timeout: 30000 });
     logger.info(`Copied acme standalone user-data (${certs.length} cert def(s)) into ${config.certs.acmeContainer}`);
-    return true;
+    return { ok: true, error: null };
   } catch (err) {
     logger.warn(`Could not copy standalone user-data into acme-companion (${config.certs.acmeContainer}): ${err.message}`);
-    return false;
+    return { ok: false, error: err.message };
   } finally {
     try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
   }
@@ -105,20 +105,24 @@ async function pushUserData() {
  */
 async function signalAcme() {
   try {
-    await exec('docker', ['exec', config.certs.acmeContainer, '/app/signal_le_service'], { timeout: 30000, silent: true });
+    await exec('docker', ['exec', config.certs.acmeContainer, '/app/signal_le_service'], { timeout: 30000 });
     logger.info('Signalled acme-companion to reload standalone certs');
-    return true;
+    return { ok: true, error: null };
   } catch (err) {
     logger.warn(`Could not signal acme-companion (${config.certs.acmeContainer}); change applies within the hour: ${err.message}`);
-    return false;
+    return { ok: false, error: err.message };
   }
 }
 
-/** Push the user-data into acme-companion and signal it to reload. */
+/**
+ * Push the user-data into acme-companion and signal it to reload.
+ * Returns { pushed, signalled, error } so callers can surface failures.
+ */
 async function sync() {
-  const pushed = await pushUserData();
-  if (pushed) return signalAcme();
-  return false;
+  const push = await pushUserData();
+  if (!push.ok) return { pushed: false, signalled: false, error: push.error };
+  const signal = await signalAcme();
+  return { pushed: true, signalled: signal.ok, error: signal.ok ? null : signal.error };
 }
 
 /**
@@ -127,11 +131,29 @@ async function sync() {
  */
 async function syncOnStartup(attempts = 3, delayMs = 5000) {
   for (let i = 0; i < attempts; i++) {
-    const ok = await sync();
-    if (ok) return true;
+    const result = await sync();
+    if (result.pushed) return result;
     if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs));
   }
-  return false;
+  return { pushed: false, signalled: false, error: 'acme-companion not reachable' };
+}
+
+/**
+ * Read back what acme-companion currently has in its user-data file, plus
+ * whether the container is reachable. Used by the dashboard's diagnostics so
+ * the operator can confirm a cert definition actually reached acme-companion.
+ */
+async function readAcmeUserData() {
+  try {
+    const { stdout } = await exec(
+      'docker',
+      ['exec', config.certs.acmeContainer, 'sh', '-c', `cat ${config.certs.acmeUserDataPath} 2>/dev/null || true`],
+      { timeout: 15000, silent: true }
+    );
+    return { reachable: true, container: config.certs.acmeContainer, content: stdout || '' };
+  } catch (err) {
+    return { reachable: false, container: config.certs.acmeContainer, content: '', error: err.message };
+  }
 }
 
 function certFilePath(cert, key) {
@@ -205,6 +227,7 @@ module.exports = {
   signalAcme,
   sync,
   syncOnStartup,
+  readAcmeUserData,
   getStatus,
   withStatus,
   getDownload,

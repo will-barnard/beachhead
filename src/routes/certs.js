@@ -63,10 +63,13 @@ router.post('/', async (req, res) => {
     const cert = await StandaloneCerts.create({ name, domains });
     logger.info(`Standalone cert #${cert.id} created for ${domains.join(', ')}`);
 
-    // Rewrite acme-companion's user-data file and trigger issuance now.
-    await certs.sync();
+    // Push the definition into acme-companion and trigger issuance now.
+    const sync = await certs.sync();
+    const warning = sync.pushed
+      ? (sync.signalled ? null : 'Saved, but could not signal acme-companion — it will pick this up within the hour.')
+      : `Saved, but could not deliver the config to acme-companion (${sync.error || 'unreachable'}). Check that the acme container is running.`;
 
-    res.status(201).json(certs.withStatus(cert));
+    res.status(201).json({ ...certs.withStatus(cert), sync, warning });
   } catch (err) {
     logger.error('Failed to create standalone cert', err);
     res.status(500).json({ error: err.message });
@@ -81,10 +84,28 @@ router.post('/:id/refresh', async (req, res) => {
   try {
     const cert = await StandaloneCerts.findById(req.params.id);
     if (!cert) return res.status(404).json({ error: 'Certificate not found' });
-    const signalled = await certs.sync();
-    res.json({ message: signalled ? 'Renewal check triggered' : 'Queued — acme-companion will pick it up within the hour', cert: certs.withStatus(cert) });
+    const sync = await certs.sync();
+    const message = !sync.pushed
+      ? `Could not reach acme-companion (${sync.error || 'unreachable'})`
+      : (sync.signalled ? 'Renewal check triggered' : 'Config delivered — acme-companion will pick it up within the hour');
+    res.json({ message, sync, cert: certs.withStatus(cert) });
   } catch (err) {
     logger.error('Failed to refresh standalone cert', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/certs/diagnostics
+ * Read back the config acme-companion currently holds so the operator can
+ * confirm a cert definition actually reached it (and that the container is up).
+ */
+router.get('/diagnostics', async (req, res) => {
+  try {
+    const acme = await certs.readAcmeUserData();
+    res.json(acme);
+  } catch (err) {
+    logger.error('Failed to read acme diagnostics', err);
     res.status(500).json({ error: err.message });
   }
 });

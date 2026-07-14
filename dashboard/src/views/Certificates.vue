@@ -2,6 +2,29 @@
   <div>
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem;">
       <h2 style="margin:0;">Certificates</h2>
+      <button class="btn btn-sm" @click="runDiagnostics" :disabled="diagLoading">
+        {{ diagLoading ? '…' : 'Diagnostics' }}
+      </button>
+    </div>
+
+    <div v-if="diag" class="card" style="margin-bottom:1rem;">
+      <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.5rem;">
+        <strong style="font-size:0.9rem;">acme-companion</strong>
+        <span :class="['badge', diag.reachable ? 'badge-success' : 'badge-warning']" style="font-size:0.65rem;">
+          {{ diag.reachable ? 'reachable' : 'unreachable' }}
+        </span>
+        <span style="color:var(--muted); font-size:0.78rem;">{{ diag.container }}</span>
+        <button class="btn btn-sm" style="margin-left:auto;" @click="diag = null">Hide</button>
+      </div>
+      <p style="color:var(--muted); font-size:0.78rem; margin:0 0 0.4rem;">
+        This is exactly what acme-companion currently has for standalone certs. Each hostname you added should appear in an <code>ACME_..._HOST</code> line.
+      </p>
+      <pre style="background:var(--surface); padding:0.6rem; border-radius:4px; font-size:0.75rem; overflow:auto; margin:0;">{{ diag.content || '(empty — no standalone certs delivered yet)' }}</pre>
+    </div>
+
+    <div v-if="notice" class="card" style="margin-bottom:1rem; border-left:3px solid var(--warning, #e0b341);">
+      <span style="font-size:0.85rem;">{{ notice }}</span>
+      <button class="btn btn-sm" style="margin-left:0.75rem;" @click="notice = null">Dismiss</button>
     </div>
 
     <div class="card" style="margin-bottom:1.5rem;">
@@ -95,6 +118,9 @@ export default {
     addError: null,
     busy: null,
     form: { name: '', domains: '' },
+    notice: null,
+    diag: null,
+    diagLoading: false,
   }),
   async mounted() {
     await this.load();
@@ -111,15 +137,27 @@ export default {
     },
     async addCert() {
       this.addError = null;
+      this.notice = null;
       this.adding = true;
       try {
-        await api.createCert({ name: this.form.name.trim() || null, domains: this.form.domains });
+        const res = await api.createCert({ name: this.form.name.trim() || null, domains: this.form.domains });
         this.form = { name: '', domains: '' };
+        if (res && res.warning) this.notice = res.warning;
         await this.load();
       } catch (e) {
         this.addError = e.message;
       } finally {
         this.adding = false;
+      }
+    },
+    async runDiagnostics() {
+      this.diagLoading = true;
+      try {
+        this.diag = await api.getCertDiagnostics();
+      } catch (e) {
+        this.diag = { reachable: false, container: 'acme-companion', content: '', error: e.message };
+      } finally {
+        this.diagLoading = false;
       }
     },
     async download(cert, type) {
@@ -134,8 +172,10 @@ export default {
     },
     async refresh(cert) {
       this.busy = cert.id;
+      this.notice = null;
       try {
-        await api.refreshCert(cert.id);
+        const res = await api.refreshCert(cert.id);
+        if (res && res.sync && !res.sync.pushed) this.notice = res.message;
         // Give acme a moment, then reload status.
         setTimeout(() => this.load(), 1500);
       } catch (e) {

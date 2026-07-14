@@ -62,6 +62,7 @@ export default {
   createCert: (data) => request('/certs', { method: 'POST', body: data }),
   deleteCert: (id) => request(`/certs/${id}`, { method: 'DELETE' }),
   refreshCert: (id) => request(`/certs/${id}/refresh`, { method: 'POST', body: {} }),
+  getCertDiagnostics: () => request('/certs/diagnostics'),
   async downloadCert(id, type) {
     const res = await fetch(`${BASE}/certs/${id}/download/${type}`);
     if (res.status === 401) {
