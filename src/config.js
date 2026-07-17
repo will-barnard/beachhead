@@ -38,6 +38,16 @@ const config = {
     // file there via `docker cp` (no host bind mount — avoids permission/inode issues).
     acmeUserDataPath: process.env.ACME_USER_DATA_PATH || '/app/letsencrypt_user_data',
     acmeContainer: process.env.ACME_CONTAINER || 'beachhead-letsencrypt',
+    // nginx-proxy container name — used to validate + reload after Beachhead
+    // reconciles the shared ACME challenge location (see ensureChallengeLocation).
+    proxyContainer: process.env.PROXY_CONTAINER || 'beachhead-proxy',
+    // The shared vhost.d/default file, bind-mounted into this container, into
+    // nginx-proxy, and into acme-companion. Beachhead keeps exactly one ACME
+    // challenge location here so acme-companion can't create a duplicate.
+    vhostDefaultPath: process.env.VHOST_DEFAULT_PATH || '/etc/nginx/vhost.d/default',
+    // How often to re-assert the canonical vhost.d/default (ms). Catches
+    // duplicates acme-companion may add during its own hourly loop.
+    challengeReconcileMs: parseInt(process.env.CHALLENGE_RECONCILE_MS, 10) || 120000,
   },
 };
 

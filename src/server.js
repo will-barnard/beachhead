@@ -141,7 +141,17 @@ async function start() {
     (async () => {
       try {
         const certs = require('./services/certs');
+        // Assert exactly one ACME challenge location in vhost.d/default BEFORE
+        // syncing standalone certs — this self-heals a duplicate that would
+        // otherwise keep every nginx reload (and all cert issuance) broken.
+        await certs.ensureChallengeLocation();
         await certs.syncOnStartup();
+        // Periodic re-assert: acme-companion may re-add its duplicate during
+        // its own hourly loop when standalone certs exist. Cheap no-op when the
+        // file already matches.
+        setInterval(() => {
+          certs.ensureChallengeLocation().catch(() => {});
+        }, config.certs.challengeReconcileMs).unref();
       } catch (err) {
         logger.warn(`Could not sync standalone cert config on startup: ${err.message}`);
       }

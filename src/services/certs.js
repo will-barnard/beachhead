@@ -29,6 +29,77 @@ const DOWNLOADABLE = {
   cert: 'cert.pem',
 };
 
+// ── Shared ACME challenge location (vhost.d/default) ─────────────────
+//
+// nginx-proxy proxies /.well-known/acme-challenge/ straight to the app unless a
+// higher-priority location intercepts it, so a single standing block is
+// required to serve HTTP-01 tokens (for both app certs and standalone certs).
+// acme-companion tries to add its OWN copy when standalone certs are present,
+// producing a `duplicate location` that makes nginx fail to load — taking every
+// site down. Beachhead therefore OWNS this file and re-asserts exactly one
+// canonical block, stripping any duplicate acme-companion injects.
+const CANONICAL_VHOST_DEFAULT = `# Managed by Beachhead — do not edit by hand.
+#
+# EXACTLY ONE \`location ^~ /.well-known/acme-challenge/\` may exist in the
+# config included into every vhost. This single block serves HTTP-01 challenge
+# tokens (written to the shared html webroot by acme-companion) for BOTH normal
+# app certs and app-independent standalone certs.
+#
+# acme-companion will try to add its OWN duplicate copy of this location
+# (wrapped in "## Start/End of configuration add by letsencrypt container")
+# whenever standalone certs are configured. Two identical locations make nginx
+# fail to load with \`duplicate location "/.well-known/acme-challenge/"\`, which
+# takes ALL sites down and silently blocks every reload. Beachhead's
+# certs.ensureChallengeLocation() rewrites this file to the canonical form
+# below and reloads nginx on boot, after every standalone-cert change, and on a
+# periodic timer — so any duplicate acme-companion injects is stripped
+# automatically. Do NOT add a second challenge block anywhere.
+location ^~ /.well-known/acme-challenge/ {
+    auth_basic off;
+    allow all;
+    root /usr/share/nginx/html;
+    try_files $uri =404;
+}
+
+client_max_body_size 8192m;
+
+# Allow large uploads (e.g. 6 GB static site zips) to transfer without timing out.
+proxy_read_timeout 3600s;
+proxy_send_timeout 3600s;
+client_body_timeout 3600s;
+`;
+
+/**
+ * Re-assert the canonical vhost.d/default so there is exactly one ACME
+ * challenge location, then reload nginx-proxy. Idempotent: if the file already
+ * matches, it does nothing. If acme-companion has appended a duplicate block,
+ * this overwrites it back to the single canonical form and reloads.
+ *
+ * The reload only fires after `nginx -t` passes, so a transient bad state never
+ * takes the proxy down. Best-effort — never throws.
+ */
+async function ensureChallengeLocation() {
+  const filePath = config.certs.vhostDefaultPath;
+  const proxy = config.certs.proxyContainer;
+  try {
+    let current = null;
+    try { current = fs.readFileSync(filePath, 'utf8'); } catch { /* missing → write it */ }
+    if (current === CANONICAL_VHOST_DEFAULT) {
+      return { changed: false };
+    }
+    fs.writeFileSync(filePath, CANONICAL_VHOST_DEFAULT, 'utf8');
+    // Validate before reloading — if the wider config is somehow broken, keep
+    // the currently-loaded config rather than reloading into a failure.
+    await exec('docker', ['exec', proxy, 'nginx', '-t'], { timeout: 15000, silent: true });
+    await exec('docker', ['exec', proxy, 'nginx', '-s', 'reload'], { timeout: 15000, silent: true });
+    logger.info('Reconciled ACME challenge location in vhost.d/default and reloaded nginx-proxy');
+    return { changed: true, error: null };
+  } catch (err) {
+    logger.warn(`ensureChallengeLocation failed: ${err.message}`);
+    return { changed: false, error: err.message };
+  }
+}
+
 /** Bash-safe internal identifier for a cert row (used as the array key). */
 function identifierFor(cert) {
   return `bh${cert.id}`;
@@ -127,6 +198,9 @@ async function sync() {
   const push = await pushUserData();
   if (!push.ok) return { pushed: false, signalled: false, error: push.error };
   const signal = await signalAcme();
+  // Adding/removing a standalone cert is exactly when acme-companion may inject
+  // a duplicate challenge location into vhost.d/default — re-assert ours.
+  await ensureChallengeLocation();
   return { pushed: true, signalled: signal.ok, error: signal.ok ? null : signal.error };
 }
 
@@ -232,6 +306,8 @@ module.exports = {
   signalAcme,
   sync,
   syncOnStartup,
+  ensureChallengeLocation,
+  CANONICAL_VHOST_DEFAULT,
   readAcmeUserData,
   getStatus,
   withStatus,

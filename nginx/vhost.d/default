@@ -1,11 +1,25 @@
-# NOTE: Do NOT add a `location ^~ /.well-known/acme-challenge/` block here.
-# acme-companion injects its OWN identical block into this same file at runtime
-# (marked "## Start of configuration add by letsencrypt container"). A static
-# copy here produces two identical locations in every vhost, which makes nginx
-# fail to load with `duplicate location "/.well-known/acme-challenge/"` — taking
-# ALL sites down and silently blocking every reload (so new vhosts never
-# activate). acme-companion's block already serves challenges from
-# /usr/share/nginx/html, so nothing extra is needed.
+# Managed by Beachhead — do not edit by hand.
+#
+# EXACTLY ONE `location ^~ /.well-known/acme-challenge/` may exist in the
+# config included into every vhost. This single block serves HTTP-01 challenge
+# tokens (written to the shared html webroot by acme-companion) for BOTH normal
+# app certs and app-independent standalone certs.
+#
+# acme-companion will try to add its OWN duplicate copy of this location
+# (wrapped in "## Start/End of configuration add by letsencrypt container")
+# whenever standalone certs are configured. Two identical locations make nginx
+# fail to load with `duplicate location "/.well-known/acme-challenge/"`, which
+# takes ALL sites down and silently blocks every reload. Beachhead's
+# certs.ensureChallengeLocation() rewrites this file to the canonical form
+# below and reloads nginx on boot, after every standalone-cert change, and on a
+# periodic timer — so any duplicate acme-companion injects is stripped
+# automatically. Do NOT add a second challenge block anywhere.
+location ^~ /.well-known/acme-challenge/ {
+    auth_basic off;
+    allow all;
+    root /usr/share/nginx/html;
+    try_files $uri =404;
+}
 
 client_max_body_size 8192m;
 
