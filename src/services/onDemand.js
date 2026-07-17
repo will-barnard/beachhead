@@ -301,14 +301,22 @@ async function autoWake(app) {
   }
 
   // Wait for health on the primary domain. Other endpoints are best-effort.
+  // In staging-only mode the primary domain has no VIRTUAL_HOST registered
+  // on purpose — check the staging host instead (same as worker.js deploys).
   const healthPath = bhConfig?.health_check || '/';
-  const healthy = await checkHealth(fresh.domain, { path: healthPath });
+  let wakeStagingHost = null;
+  if (fresh.staging_subdomain) {
+    const stagingRoot = await Settings.getStagingRootDomain();
+    if (stagingRoot) wakeStagingHost = `${fresh.staging_subdomain}.${stagingRoot}`;
+  }
+  const healthCheckDomain = (fresh.staging_only && wakeStagingHost) ? wakeStagingHost : fresh.domain;
+  const healthy = await checkHealth(healthCheckDomain, { path: healthPath });
   if (!healthy) {
     // Don't roll back — the user is staring at a wake page. Bumping
     // last_active_at lets the idle sweep retry rather than immediately
     // re-pausing.
     await Apps.update(fresh.id, { last_active_at: new Date() });
-    throw new Error(`Health check failed for ${fresh.domain} after wake`);
+    throw new Error(`Health check failed for ${healthCheckDomain} after wake`);
   }
 
   // App is healthy — clear the auto_paused flag immediately so any

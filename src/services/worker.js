@@ -368,10 +368,14 @@ async function processDeployment(deployment) {
 
     // ── VERIFY_HEALTH ──
     const healthPath = bhConfig?.health_check || '/';
-    await transition(deployment, STATES.VERIFY_HEALTH, `Checking health of ${app.domain}${healthPath}`);
-    const healthy = await checkHealth(app.domain, { path: healthPath });
+    // In staging-only mode the primary domain has no VIRTUAL_HOST registered
+    // on purpose (generateOverride only wires up stagingHost) — checking
+    // app.domain here would always 503/timeout even on a healthy deploy.
+    const healthCheckDomain = (app.staging_only && stagingHost) ? stagingHost : app.domain;
+    await transition(deployment, STATES.VERIFY_HEALTH, `Checking health of ${healthCheckDomain}${healthPath}`);
+    const healthy = await checkHealth(healthCheckDomain, { path: healthPath });
     if (!healthy) {
-      throw new Error(`Health check failed for ${app.domain}`);
+      throw new Error(`Health check failed for ${healthCheckDomain}`);
     }
 
     // ── SUCCESS ──

@@ -380,9 +380,17 @@ router.post('/:id/deployments/:deployId/rollback', async (req, res) => {
     // Images must still be in the local Docker cache from when this deployment ran.
     await dockerComposeUpNoBuild(deployDir, 'beachhead.override.yml', transientServices);
 
-    // Verify the deployment is healthy before committing to it
+    // Verify the deployment is healthy before committing to it.
+    // In staging-only mode the primary domain has no VIRTUAL_HOST registered
+    // on purpose — check the staging host instead, same as a normal deploy.
     const healthPath = bhConfig?.health_check || '/';
-    const healthy = await checkHealth(app.domain, { path: healthPath });
+    let stagingHost = null;
+    if (app.staging_subdomain) {
+      const stagingRoot = await Settings.getStagingRootDomain();
+      if (stagingRoot) stagingHost = `${app.staging_subdomain}.${stagingRoot}`;
+    }
+    const healthCheckDomain = (app.staging_only && stagingHost) ? stagingHost : app.domain;
+    const healthy = await checkHealth(healthCheckDomain, { path: healthPath });
     if (!healthy) {
       try { await dockerComposeDown(deployDir, 'beachhead.override.yml'); } catch {}
       return res.status(502).json({ error: `Health check failed — deployment #${targetDep.id} may have stale images` });
