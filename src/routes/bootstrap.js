@@ -3,6 +3,7 @@ const config = require('../config');
 const logger = require('../logger');
 const Users = require('../models/users');
 const Settings = require('../models/settings');
+const construction = require('../services/construction');
 const { isBootstrapMode, signToken, refreshUserCount, requireAuth, requireSuperAdmin } = require('../middleware/auth');
 
 const router = express.Router();
@@ -238,7 +239,7 @@ router.post('/worker-token', requireAuth, requireSuperAdmin, async (req, res) =>
  * Update settings (admin only). Accepts { key: value } pairs.
  */
 router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
-  const allowed = ['build_mode', 'registry_type', 'registry_url', 'registry_user', 'registry_password', 'ghcr_owner', 'ghcr_token', 'git_ssh_key_path', 'git_https_token', 'network_mode', 'staging_root_domain', 'lan_bind_ip'];
+  const allowed = ['build_mode', 'registry_type', 'registry_url', 'registry_user', 'registry_password', 'ghcr_owner', 'ghcr_token', 'git_ssh_key_path', 'git_https_token', 'network_mode', 'staging_root_domain', 'lan_bind_ip', 'construction_heading', 'construction_message', 'construction_contact'];
   const updates = req.body;
 
   if (!updates || typeof updates !== 'object') {
@@ -278,6 +279,17 @@ router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
         await Settings.set(key, v);
         continue;
       }
+      if (key === 'construction_heading' || key === 'construction_message' || key === 'construction_contact') {
+        const v = String(value == null ? '' : value).trim();
+        const max = key === 'construction_message'
+          ? construction.MAX_MESSAGE_LEN
+          : (key === 'construction_heading' ? construction.MAX_HEADING_LEN : construction.MAX_CONTACT_LEN);
+        if (v.length > max) {
+          return res.status(400).json({ error: `${key} must be ${max} characters or fewer` });
+        }
+        await Settings.set(key, v);
+        continue;
+      }
       // Skip masked password — don't overwrite with placeholder
       if (key === 'registry_password' && value === '••••••••') continue;
       if (key === 'ghcr_token' && value === '••••••••') continue;
@@ -285,6 +297,18 @@ router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
       await Settings.set(key, String(value));
     }
     logger.info(`Settings updated by ${req.user.username || 'bootstrap'}`);
+
+    // Changing the global copy must re-render every live placeholder that
+    // inherits it — otherwise the new text only appears the next time an app
+    // is toggled. Fire-and-forget: the settings write already succeeded and
+    // must not be reported as failed if a container recreate hiccups.
+    if (['construction_heading', 'construction_message', 'construction_contact']
+      .some((k) => Object.prototype.hasOwnProperty.call(updates, k))) {
+      construction.refreshInheritingApps().catch((err) => {
+        logger.warn(`Could not refresh under-construction placeholders: ${err.message}`);
+      });
+    }
+
     const settings = await Settings.getAll();
     if (settings.registry_password) settings.registry_password = '••••••••';
     if (settings.ghcr_token) settings.ghcr_token = '••••••••';

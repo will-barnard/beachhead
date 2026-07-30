@@ -34,6 +34,20 @@ const Settings = {
   },
 
   /**
+   * Global default copy for the under-construction placeholder page.
+   * Individual apps may override any of these three fields; a NULL or blank
+   * per-app value falls back to what's returned here.
+   * See services/construction.js.
+   */
+  async getConstructionDefaults() {
+    return {
+      heading: (await this.get('construction_heading')) || '',
+      message: (await this.get('construction_message')) || '',
+      contact: (await this.get('construction_contact')) || '',
+    };
+  },
+
+  /**
    * LAN IPv4 address that static service ports bind to. When set, published
    * host ports are bound to this address only (true LAN-only exposure); when
    * empty, static ports cannot be enabled.

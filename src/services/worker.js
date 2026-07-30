@@ -16,6 +16,7 @@ const BuildJobs = require('../models/buildJobs');
 const Settings = require('../models/settings');
 const proxyNetwork = require('./proxyNetwork');
 const onDemand = require('./onDemand');
+const construction = require('./construction');
 
 const STATES = Deployments.STATES;
 const POLL_INTERVAL = 5000;
@@ -417,6 +418,13 @@ async function processDeployment(deployment) {
     // Catches cases where earlier deploys weren't torn down (crashes, failed teardowns)
     // and would otherwise share the same VIRTUAL_HOST on beachhead-net.
     await stopOtherDeployContainers(app.id, deployment.id);
+
+    // A deploy recreates the public container, which re-registers its
+    // VIRTUAL_HOSTs with nginx-proxy. In staging-only mode that list excludes
+    // the primary domain, so re-assert the under-construction placeholder here
+    // — otherwise a deploy would silently drop the domain back to a bare 503.
+    // No-op when the page isn't enabled.
+    await construction.syncForApp(app);
 
     logger.info(`[deploy #${deployment.id}] Deployment complete for ${app.name}`);
   } catch (err) {

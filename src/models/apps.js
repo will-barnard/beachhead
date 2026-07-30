@@ -37,7 +37,7 @@ const Apps = {
   },
 
   async update(id, fields) {
-    const allowed = ['name', 'repo_url', 'domain', 'branch', 'public_service', 'public_port', 'auto_deploy', 'webhook_secret', 'www_redirect', 'active_deployment_id', 'paused', 'paused_redirect_url', 'staging_subdomain', 'staging_only', 'proxy_network_name', 'on_demand', 'idle_timeout_seconds', 'last_active_at', 'auto_paused', 'always_on_services', 'wake_page_html'];
+    const allowed = ['name', 'repo_url', 'domain', 'branch', 'public_service', 'public_port', 'auto_deploy', 'webhook_secret', 'www_redirect', 'active_deployment_id', 'paused', 'paused_redirect_url', 'staging_subdomain', 'staging_only', 'proxy_network_name', 'on_demand', 'idle_timeout_seconds', 'last_active_at', 'auto_paused', 'always_on_services', 'wake_page_html', 'construction_page', 'construction_heading', 'construction_message', 'construction_contact'];
     const sets = [];
     const values = [];
     let idx = 1;

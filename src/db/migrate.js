@@ -323,6 +323,32 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    // Under-construction page shown on the primary domain while an app is in
+    // staging-only mode. Without it, the real domain has no vhost at all and
+    // nginx-proxy answers with a bare 503 — see services/construction.js.
+    //
+    //   construction_page      — per-app on/off toggle
+    //   construction_heading   — per-app override of the global heading
+    //   construction_message   — per-app override of the global body text
+    //   construction_contact   — per-app override of the contact email/URL
+    //
+    // The three text columns are NULL by default; NULL or blank falls back to
+    // the global default in the settings table, so changing the global copy
+    // updates every app that hasn't overridden it.
+    name: '027_add_construction_page_to_apps',
+    sql: `
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS construction_page BOOLEAN DEFAULT false;
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS construction_heading TEXT;
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS construction_message TEXT;
+      ALTER TABLE apps ADD COLUMN IF NOT EXISTS construction_contact TEXT;
+      INSERT INTO settings (key, value) VALUES
+        ('construction_heading', 'Coming Soon'),
+        ('construction_message', 'This site is currently under construction. Please check back soon.'),
+        ('construction_contact', '')
+      ON CONFLICT DO NOTHING;
+    `,
+  },
 ];
 
 async function migrate() {

@@ -11,6 +11,7 @@ const StaticSites = require('../models/staticSites');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
 const { dockerComposeDown, dockerComposeRecreate, dockerComposeUpNoBuild, dockerComposeStop, dockerComposeUpStateful, stopComposeProject, ensureNetwork } = require('../services/docker');
 const { startPausePlaceholder, stopPausePlaceholder, stopAutoPausePlaceholders } = require('../services/pause');
+const construction = require('../services/construction');
 const { generateOverride, writeOverrideFile, readBeachheadConfig, readNamedVolumes, readAllServiceNames } = require('../services/composeWrapper');
 const proxyNetwork = require('../services/proxyNetwork');
 const { checkHealth } = require('../services/healthCheck');
@@ -194,6 +195,9 @@ router.delete('/:id', async (req, res) => {
 
     // Also tear down a pause placeholder, if present
     try { await stopPausePlaceholder(app.id); } catch {}
+    // ...and the under-construction placeholder, which is a separate container
+    // on beachhead-net and would otherwise outlive the app it belongs to.
+    try { await construction.stopConstructionPlaceholder(app.id); } catch {}
 
     // Tear down the app's per-app proxy network now that no containers
     // remain attached. Best-effort — if removal fails (e.g. a stray
@@ -658,6 +662,14 @@ router.put('/:id/staging-only', async (req, res) => {
 
     // Apply live unless paused (paused placeholder picks up hosts on unpause).
     if (!app.paused) {
+      // Order matters when LEAVING staging-only: the app's real containers must
+      // reclaim the primary domain, and the placeholder must be gone before
+      // they do — otherwise both advertise the same VIRTUAL_HOST and
+      // nginx-proxy round-robins between the live site and the placeholder.
+      // syncForApp() removes it whenever staging_only is false, so run it
+      // first on the way out and last on the way in.
+      if (!stagingOnly) await construction.syncForApp(app);
+
       const result = await regenerateOverride(app);
       if (result) {
         try {
@@ -666,13 +678,17 @@ router.put('/:id/staging-only', async (req, res) => {
           logger.warn(`Staging-only: could not live-update container: ${err.message}`);
         }
       }
+
+      if (stagingOnly) await construction.syncForApp(app);
     }
 
     const stagingRoot = await Settings.getStagingRootDomain();
     const stagingUrl = app.staging_subdomain && stagingRoot ? `${app.staging_subdomain}.${stagingRoot}` : null;
     let message;
     if (stagingOnly) {
-      message = `Staging-only enabled — ${app.domain} is offline; serving ${stagingUrl}`;
+      message = app.construction_page
+        ? `Staging-only enabled — ${app.domain} shows the under-construction page; serving ${stagingUrl}`
+        : `Staging-only enabled — ${app.domain} is offline; serving ${stagingUrl}`;
     } else if (clearStaging) {
       message = `Live — ${app.domain} is serving; staging URL cleared`;
     } else {
@@ -682,6 +698,162 @@ router.put('/:id/staging-only', async (req, res) => {
     res.json({ message, app: sanitizeApp(app), staging_url: stagingUrl });
   } catch (err) {
     logger.error('Failed to update staging-only mode', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Under-construction page ──
+
+/**
+ * GET /apps/:id/construction
+ *
+ * Returns the app's own (possibly null) values alongside the global defaults
+ * and the fully-resolved copy that would actually be rendered — so the UI can
+ * show real placeholder text in the override fields without guessing at the
+ * fallback rules.
+ */
+router.get('/:id/construction', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+
+    const defaults = await Settings.getConstructionDefaults();
+    res.json({
+      enabled: !!app.construction_page,
+      // Whether the page is actually being served right now. It only applies
+      // in staging-only mode, and pause takes precedence over it.
+      active: construction.shouldRun(app),
+      heading: app.construction_heading,
+      message: app.construction_message,
+      contact: app.construction_contact,
+      defaults,
+      resolved: construction.resolveContent(app, defaults),
+      limits: {
+        heading: construction.MAX_HEADING_LEN,
+        message: construction.MAX_MESSAGE_LEN,
+        contact: construction.MAX_CONTACT_LEN,
+      },
+    });
+  } catch (err) {
+    logger.error('Failed to get construction page config', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * PUT /apps/:id/construction
+ *
+ * Toggle and configure the under-construction page for one app.
+ *
+ * Body (all optional — omitted keys are left untouched):
+ *   construction_page:    boolean       — on/off
+ *   construction_heading: string|null   — "" or null clears the override
+ *   construction_message: string|null   — back to the global default
+ *   construction_contact: string|null
+ *
+ * The page is only visible while the app is in staging-only mode (that's the
+ * state where the primary domain has no vhost and would otherwise 503). The
+ * toggle can still be set ahead of time — it takes effect the moment
+ * staging-only is enabled.
+ */
+router.put('/:id/construction', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+
+    const body = req.body || {};
+    const updates = {};
+
+    if (body.construction_page !== undefined) {
+      if (typeof body.construction_page !== 'boolean') {
+        return res.status(400).json({ error: 'construction_page must be a boolean' });
+      }
+      updates.construction_page = body.construction_page;
+    }
+
+    // Blank and null both mean "inherit the global default" — normalise to
+    // NULL so the fallback logic has a single case to handle.
+    const textFields = [
+      ['construction_heading', construction.MAX_HEADING_LEN],
+      ['construction_message', construction.MAX_MESSAGE_LEN],
+      ['construction_contact', construction.MAX_CONTACT_LEN],
+    ];
+    for (const [field, max] of textFields) {
+      if (body[field] === undefined) continue;
+      if (body[field] === null || body[field] === '') {
+        updates[field] = null;
+        continue;
+      }
+      if (typeof body[field] !== 'string') {
+        return res.status(400).json({ error: `${field} must be a string or null` });
+      }
+      const value = body[field].trim();
+      if (value.length > max) {
+        return res.status(400).json({ error: `${field} must be ${max} characters or fewer` });
+      }
+      updates[field] = value || null;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No recognised fields to update' });
+    }
+
+    const updated = await Apps.update(app.id, updates);
+    Object.assign(app, updated);
+
+    // Bring the placeholder in line: start it, re-render it with the new copy,
+    // or tear it down — syncForApp decides from the app's current state.
+    const running = await construction.syncForApp(app);
+
+    const defaults = await Settings.getConstructionDefaults();
+    let message;
+    if (running) {
+      message = `Under-construction page is live on ${app.domain}`;
+    } else if (app.construction_page && !app.staging_only) {
+      message = 'Under-construction page saved — it will appear when staging-only mode is enabled';
+    } else if (app.construction_page && app.paused) {
+      message = 'Under-construction page saved — the pause placeholder takes precedence while the app is paused';
+    } else {
+      message = `Under-construction page disabled — ${app.domain} is served normally`;
+    }
+
+    logger.info(`[app ${app.name}] ${message}`);
+    res.json({
+      message,
+      app: sanitizeApp(app),
+      active: construction.shouldRun(app),
+      resolved: construction.resolveContent(app, defaults),
+    });
+  } catch (err) {
+    logger.error('Failed to update construction page config', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /apps/:id/construction/preview
+ *
+ * Renders exactly what visitors would see, so the operator can check the copy
+ * before flipping staging-only on. Served as HTML from Beachhead's own domain
+ * (behind auth) rather than from the placeholder container.
+ */
+router.get('/:id/construction/preview', async (req, res) => {
+  try {
+    const app = await Apps.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: 'App not found' });
+
+    const defaults = await Settings.getConstructionDefaults();
+    // Allow unsaved values from the editor via query string so the preview
+    // reflects what's currently typed, not just what's persisted.
+    const draft = {
+      construction_heading: req.query.heading ?? app.construction_heading,
+      construction_message: req.query.message ?? app.construction_message,
+      construction_contact: req.query.contact ?? app.construction_contact,
+    };
+    const content = construction.resolveContent(draft, defaults);
+    res.type('html').send(construction.renderConstructionHtml(content));
+  } catch (err) {
+    logger.error('Failed to render construction page preview', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -774,6 +946,11 @@ router.post('/:id/pause', async (req, res) => {
         }
       }
     }
+
+    // The under-construction placeholder claims the same hostnames as the
+    // pause placeholder. Retire it first so nginx-proxy never sees two
+    // upstreams for the primary domain.
+    try { await construction.stopConstructionPlaceholder(app.id); } catch {}
 
     // Start the placeholder so the domain still serves something with a valid cert
     await startPausePlaceholder(app);
@@ -871,6 +1048,11 @@ router.post('/:id/unpause', async (req, res) => {
     // re-pause a freshly-unpaused on-demand app.
     await Apps.update(app.id, { paused: false, paused_redirect_url: null, auto_paused: false, last_active_at: new Date() });
     try { await stopAutoPausePlaceholders(app.id); } catch {}
+
+    // Pause suppressed the under-construction placeholder; restore it if the
+    // app is still in staging-only mode with the page enabled.
+    app.paused = false;
+    await construction.syncForApp(app);
 
     if (started) {
       return res.json({ message: 'App unpaused — containers restarted', mode: 'start' });

@@ -258,6 +258,62 @@
       </button>
     </div>
 
+    <!-- Under Construction Page -->
+    <div class="card" style="margin-top: 2rem;">
+      <h3 style="margin-bottom: 1rem;">Under Construction Page</h3>
+
+      <div v-if="constructionError" style="color: var(--danger); margin-bottom: 0.75rem;">{{ constructionError }}</div>
+      <div v-if="constructionSuccess" style="color: var(--success); margin-bottom: 0.75rem;">{{ constructionSuccess }}</div>
+
+      <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 1rem;">
+        Default copy for the holding page shown on an app's primary domain while it's in
+        staging-only mode — instead of the bare nginx 503. Turn it on per app from the
+        app's <strong>Staging URL</strong> card, where you can also override any of these
+        fields for that one client.
+      </p>
+
+      <div style="max-width: 560px;">
+        <label>Heading</label>
+        <input
+          v-model="constructionSettings.construction_heading"
+          placeholder="Coming Soon"
+          maxlength="200"
+          style="width: 100%;"
+        />
+
+        <label style="display: block; margin-top: 1rem;">Message</label>
+        <textarea
+          v-model="constructionSettings.construction_message"
+          placeholder="This site is currently under construction. Please check back soon."
+          maxlength="2000"
+          rows="4"
+          style="width: 100%; font-family: inherit;"
+        ></textarea>
+        <p style="color: var(--muted); font-size: 0.85rem; margin: 0.4rem 0 0;">
+          Plain text — blank lines become separate paragraphs. HTML is escaped, not rendered.
+        </p>
+
+        <label style="display: block; margin-top: 1rem;">Contact (optional)</label>
+        <input
+          v-model="constructionSettings.construction_contact"
+          placeholder="hello@example.com"
+          maxlength="254"
+          style="width: 100%;"
+        />
+        <p style="color: var(--muted); font-size: 0.85rem; margin: 0.4rem 0 0;">
+          An email address or an <code>https://</code> link, shown at the bottom of the page.
+          Anything else is rendered as plain text.
+        </p>
+      </div>
+
+      <button class="btn" @click="saveConstructionSettings" :disabled="savingConstruction" style="margin-top: 1.5rem;">
+        {{ savingConstruction ? 'Saving...' : 'Save Page Defaults' }}
+      </button>
+      <p style="color: var(--muted); font-size: 0.85rem; margin: 0.75rem 0 0;">
+        Saving re-renders every live holding page that hasn't overridden these fields.
+      </p>
+    </div>
+
     <!-- LAN Ports -->
     <div class="card" style="margin-top: 2rem;">
       <h3 style="margin-bottom: 1rem;">LAN Ports</h3>
@@ -375,6 +431,14 @@ export default {
     stagingError: null,
     stagingSuccess: null,
     savingStaging: false,
+    constructionSettings: {
+      construction_heading: '',
+      construction_message: '',
+      construction_contact: '',
+    },
+    constructionError: null,
+    constructionSuccess: null,
+    savingConstruction: false,
     lanSettings: {
       lan_bind_ip: '',
     },
@@ -393,6 +457,7 @@ export default {
     await this.loadBuildSettings();
     await this.loadNetworkSettings();
     await this.loadStagingSettings();
+    await this.loadConstructionSettings();
     await this.loadLanSettings();
     try {
       const status = await api.getBootstrapStatus();
@@ -544,6 +609,33 @@ export default {
         this.stagingError = e.message;
       } finally {
         this.savingStaging = false;
+      }
+    },
+    async loadConstructionSettings() {
+      try {
+        const settings = await api.getSettings();
+        this.constructionSettings.construction_heading = settings.construction_heading || '';
+        this.constructionSettings.construction_message = settings.construction_message || '';
+        this.constructionSettings.construction_contact = settings.construction_contact || '';
+      } catch {
+        // settings may not exist yet — placeholders show the built-in defaults
+      }
+    },
+    async saveConstructionSettings() {
+      this.constructionError = null;
+      this.constructionSuccess = null;
+      this.savingConstruction = true;
+      try {
+        await api.updateSettings({
+          construction_heading: this.constructionSettings.construction_heading.trim(),
+          construction_message: this.constructionSettings.construction_message.trim(),
+          construction_contact: this.constructionSettings.construction_contact.trim(),
+        });
+        this.constructionSuccess = 'Under-construction defaults saved';
+      } catch (e) {
+        this.constructionError = e.message;
+      } finally {
+        this.savingConstruction = false;
       }
     },
     async loadLanSettings() {

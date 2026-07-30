@@ -379,6 +379,81 @@
               </button>
             </div>
           </div>
+
+          <!-- Under-construction page -->
+          <div style="margin-top:0.9rem; padding-top:0.85rem; border-top:1px solid var(--border);">
+            <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:0.75rem; flex-wrap:wrap;">
+              <div style="flex:1; min-width:220px; font-size:0.85rem;">
+                <label style="display:flex; align-items:center; gap:0.45rem; cursor:pointer;">
+                  <input type="checkbox" v-model="constructionForm.enabled" :disabled="constructionBusy" />
+                  <strong>Show an “under construction” page</strong>
+                </label>
+                <span v-if="constructionActive" class="badge badge-success" style="margin-left:1.6rem; font-size:0.65rem;">Live</span>
+                <p style="color:var(--muted); font-size:0.78rem; margin:0.3rem 0 0 1.6rem;">
+                  While staging-only mode is on, serve a branded holding page at
+                  <strong>{{ app.domain }}</strong> instead of the bare nginx 503.
+                  Keeps the domain’s SSL certificate provisioned and renewing, so it’s
+                  already valid at go-live.
+                </p>
+              </div>
+            </div>
+
+            <div v-if="constructionForm.enabled" style="margin-top:0.75rem; margin-left:1.6rem;">
+              <p style="color:var(--muted); font-size:0.75rem; margin:0 0 0.6rem;">
+                Leave a field blank to inherit the global default from
+                <router-link to="/settings">Settings → Under Construction Page</router-link>.
+              </p>
+
+              <div style="margin-bottom:0.6rem;">
+                <label style="font-size:0.8rem; color:var(--muted);">Heading</label>
+                <input
+                  v-model="constructionForm.heading"
+                  :placeholder="constructionDefaults.heading || 'Coming Soon'"
+                  :maxlength="constructionLimits.heading"
+                  :disabled="constructionBusy"
+                  style="width:100%;"
+                />
+              </div>
+
+              <div style="margin-bottom:0.6rem;">
+                <label style="font-size:0.8rem; color:var(--muted);">Message</label>
+                <textarea
+                  v-model="constructionForm.message"
+                  :placeholder="constructionDefaults.message || 'This site is currently under construction.'"
+                  :maxlength="constructionLimits.message"
+                  :disabled="constructionBusy"
+                  rows="3"
+                  style="width:100%; font-family:inherit;"
+                ></textarea>
+                <p style="color:var(--muted); font-size:0.72rem; margin:0.25rem 0 0;">
+                  Plain text. Blank lines become separate paragraphs.
+                </p>
+              </div>
+
+              <div style="margin-bottom:0.6rem;">
+                <label style="font-size:0.8rem; color:var(--muted);">Contact (optional)</label>
+                <input
+                  v-model="constructionForm.contact"
+                  :placeholder="constructionDefaults.contact || 'hello@example.com'"
+                  :maxlength="constructionLimits.contact"
+                  :disabled="constructionBusy"
+                  style="width:100%;"
+                />
+                <p style="color:var(--muted); font-size:0.72rem; margin:0.25rem 0 0;">
+                  An email address or an https:// link — rendered at the bottom of the page.
+                </p>
+              </div>
+            </div>
+
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.6rem; margin-left:1.6rem;">
+              <button class="btn" @click="saveConstruction" :disabled="constructionBusy || !constructionDirty">
+                {{ constructionBusy ? 'Saving…' : 'Save page' }}
+              </button>
+              <button v-if="constructionForm.enabled" class="btn" @click="previewConstruction" :disabled="constructionBusy">
+                Preview
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -642,8 +717,29 @@ export default {
     savingOnDemand: false,
     autoPausing: false,
     showWakeHtml: false,
+    // Under-construction page. `construction` holds the last-saved server
+    // state so we can diff against the form for the dirty check; blank form
+    // fields mean "inherit the global default" and are sent as null.
+    construction: null,
+    constructionForm: { enabled: false, heading: '', message: '', contact: '' },
+    constructionDefaults: { heading: '', message: '', contact: '' },
+    constructionLimits: { heading: 200, message: 2000, contact: 254 },
+    constructionActive: false,
+    constructionBusy: false,
   }),
   computed: {
+    constructionDirty() {
+      if (!this.construction) return false;
+      const f = this.constructionForm;
+      const c = this.construction;
+      const norm = (v) => (v == null ? '' : String(v));
+      return (
+        Boolean(f.enabled) !== Boolean(c.enabled) ||
+        norm(f.heading) !== norm(c.heading) ||
+        norm(f.message) !== norm(c.message) ||
+        norm(f.contact) !== norm(c.contact)
+      );
+    },
     onDemandDirty() {
       if (!this.onDemand) return false;
       const f = this.onDemandForm;
@@ -698,6 +794,11 @@ export default {
             await this.loadServicePorts(id);
           } catch (e) {
             console.warn('Could not load service ports:', e.message);
+          }
+          try {
+            await this.loadConstruction(id);
+          } catch (e) {
+            console.warn('Could not load under-construction config:', e.message);
           }
         }
         try {
@@ -1123,6 +1224,54 @@ export default {
       } finally {
         this.stagingOnlyBusy = false;
       }
+    },
+    async loadConstruction(appId) {
+      const data = await api.getConstruction(appId || this.app.id);
+      this.construction = {
+        enabled: !!data.enabled,
+        heading: data.heading || '',
+        message: data.message || '',
+        contact: data.contact || '',
+      };
+      this.constructionForm = { ...this.construction };
+      this.constructionDefaults = data.defaults || { heading: '', message: '', contact: '' };
+      if (data.limits) this.constructionLimits = data.limits;
+      this.constructionActive = !!data.active;
+    },
+    async saveConstruction() {
+      this.constructionBusy = true;
+      try {
+        const f = this.constructionForm;
+        // Blank means "inherit the global default" — send null, not "".
+        const blankToNull = (v) => {
+          const s = (v == null ? '' : String(v)).trim();
+          return s === '' ? null : s;
+        };
+        const result = await api.setConstruction(this.app.id, {
+          construction_page: !!f.enabled,
+          construction_heading: blankToNull(f.heading),
+          construction_message: blankToNull(f.message),
+          construction_contact: blankToNull(f.contact),
+        });
+        this.app = { ...this.app, ...result.app };
+        await this.loadConstruction(this.app.id);
+        alert(result.message);
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      } finally {
+        this.constructionBusy = false;
+      }
+    },
+    previewConstruction() {
+      // Preview the text currently in the form (which may be unsaved) rather
+      // than what's persisted, so the operator can iterate before committing.
+      const f = this.constructionForm;
+      const params = new URLSearchParams();
+      if ((f.heading || '').trim()) params.set('heading', f.heading.trim());
+      if ((f.message || '').trim()) params.set('message', f.message.trim());
+      if ((f.contact || '').trim()) params.set('contact', f.contact.trim());
+      const qs = params.toString();
+      window.open(`/api/apps/${this.app.id}/construction/preview${qs ? `?${qs}` : ''}`, '_blank', 'noopener');
     },
     async rollback(dep) {
       if (!confirm(`Roll back to deployment #${dep.id} (${dep.commit_hash ? dep.commit_hash.slice(0, 8) : 'manual'})?

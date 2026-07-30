@@ -127,6 +127,16 @@ async function start() {
       logger.error(`Proxy network reconcile failed: ${err.message}`);
     }
 
+    // Reconcile under-construction placeholders. They carry
+    // `--restart unless-stopped` so Docker usually revives them on its own —
+    // this pass catches apps whose staging-only state changed while Beachhead
+    // was down, and clears orphans for apps that have since gone live.
+    try {
+      await require('./services/construction').reconcileAll();
+    } catch (err) {
+      logger.error(`Under-construction placeholder reconcile failed: ${err.message}`);
+    }
+
     // Start the activity tracker (tails nginx-proxy access log → bumps
     // last_active_at on matching apps for the on-demand idle sweep).
     try {
