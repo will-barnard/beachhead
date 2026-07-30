@@ -45,7 +45,7 @@ The installer auto-detects Linux vs macOS and adjusts accordingly:
 
 In both cases the installer will:
 - Verify Docker, Docker Compose, and Git
-- Prompt for your **domain name** (e.g. `deploy.example.com`) and **email** for SSL
+- Prompt for the **hostname** this Beachhead will be served at (e.g. `beachhead.example.com`) and an **email** for SSL
 - Generate a secure database password
 - Write `.env` with all configuration (including the platform-appropriate `DEPLOY_BASE_DIR`)
 - Create the `beachhead-net` Docker network
@@ -53,6 +53,10 @@ In both cases the installer will:
 - Verify the API is healthy
 
 > **Prerequisite:** Point your domain's DNS to this server's IP before or shortly after running the installer. SSL certificates are provisioned automatically once DNS resolves.
+
+> **Running more than one Beachhead:** the hostname prompt accepts any hostname you control, so a second install can sit at `beachhead2.example.com` alongside the first at `beachhead.example.com`. Re-running `install.sh` keeps the current hostname as the default, so an update never silently moves the dashboard.
+>
+> Each Beachhead needs its **own VM**. Container names (`beachhead-api`, `beachhead-proxy`, …), the `beachhead-net` network, host ports 80/443/3000, and the systemd units are fixed names — two stacks on one machine collide, and only one nginx-proxy can bind :80/:443.
 
 > **macOS note:** Docker Desktop must be running before you start the installer. Ports 80 and 443 must be free (Docker Desktop binds them on the host). `~/beachhead/deployments` is bind-mounted at the same path inside the container, so the host docker daemon and the in-container code agree on absolute paths.
 
