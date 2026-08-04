@@ -30,9 +30,13 @@ ok "Beachhead updated and running"
 
 # ── Wait for health ───────────────────────────
 
+# Read host-side API port from .env (defaults to 3000 for installs predating this setting)
+API_PORT="$(grep -m1 '^BEACHHEAD_API_PORT=' .env 2>/dev/null | cut -d'=' -f2)"
+API_PORT="${API_PORT:-3000}"
+
 info "Waiting for API to become healthy..."
 RETRIES=30
-until curl -sf http://localhost:3000/api/health &>/dev/null || [[ $RETRIES -eq 0 ]]; do
+until curl -sf "http://localhost:${API_PORT}/api/health" &>/dev/null || [[ $RETRIES -eq 0 ]]; do
   sleep 2
   RETRIES=$((RETRIES - 1))
 done

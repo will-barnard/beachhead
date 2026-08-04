@@ -6,7 +6,7 @@ services:
     expose:
       - "3000"
     ports:
-      - "3000:3000"   # direct access for health checks during install
+      - "${BEACHHEAD_API_PORT:-3000}:3000"   # direct access for health checks during install; host-side port only (container always listens on 3000 internally), configurable via BEACHHEAD_API_PORT
     environment:
       - NODE_ENV=production
       - DATABASE_URL=${DATABASE_URL}

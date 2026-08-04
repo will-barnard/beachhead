@@ -233,60 +233,22 @@ echo ""
 echo -e "${BOLD}Configuration${NC}"
 echo ""
 
-# Hostname for this Beachhead's dashboard/API.
-#
-# This is a full hostname, not a root domain: earlier versions asked for
-# "example.com" and forced the dashboard onto "beachhead.example.com". That
-# made it impossible to run a second Beachhead against the same root domain
-# (beachhead2.example.com), which is the normal setup when you have more than
-# one VM serving clients. Any hostname you control is now accepted — a
-# subdomain, a deeper subdomain, or a bare domain.
-#
-# Each Beachhead still needs its OWN VM. Container names, the Docker network,
-# host ports 80/443/3000 and the systemd units are all fixed names, so two
-# stacks on one machine would collide.
-
-# Re-running the installer shouldn't mean retyping the hostname — and silently
-# changing it would strand the existing Let's Encrypt certificate. Default to
-# whatever is already configured.
-BEACHHEAD_DOMAIN_DEFAULT=""
-if [[ -f .env ]] && grep -q "^BEACHHEAD_DOMAIN=" .env; then
-  BEACHHEAD_DOMAIN_DEFAULT=$(grep "^BEACHHEAD_DOMAIN=" .env | head -1 | cut -d'=' -f2-)
+# Domain
+read -rp "$(echo -e "${CYAN}▸${NC}") Enter your root domain (e.g. example.com): " ROOT_DOMAIN
+if [[ -z "$ROOT_DOMAIN" ]]; then
+  fail "Domain name is required."
 fi
 
-if [[ -n "$BEACHHEAD_DOMAIN_DEFAULT" ]]; then
-  read -rp "$(echo -e "${CYAN}▸${NC}") Hostname for this Beachhead [${BEACHHEAD_DOMAIN_DEFAULT}]: " BEACHHEAD_DOMAIN
-  BEACHHEAD_DOMAIN="${BEACHHEAD_DOMAIN:-$BEACHHEAD_DOMAIN_DEFAULT}"
-else
-  read -rp "$(echo -e "${CYAN}▸${NC}") Hostname for this Beachhead (e.g. beachhead.example.com): " BEACHHEAD_DOMAIN
+# Strip any leading subdomain the user may have accidentally included
+ROOT_DOMAIN="${ROOT_DOMAIN#beachhead.}"
+
+# Validate domain format (basic check)
+if ! echo "$ROOT_DOMAIN" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'; then
+  warn "Domain '${ROOT_DOMAIN}' may not be valid. Continuing anyway."
 fi
 
-if [[ -z "$BEACHHEAD_DOMAIN" ]]; then
-  fail "A hostname is required."
-fi
-
-# Normalise common paste artefacts: a scheme, a trailing path or slash, and
-# stray whitespace. Someone copying the URL out of their browser shouldn't end
-# up with "https://beachhead.example.com/" baked into VIRTUAL_HOST, which would
-# silently break nginx-proxy routing and cert issuance.
-BEACHHEAD_DOMAIN="${BEACHHEAD_DOMAIN#http://}"
-BEACHHEAD_DOMAIN="${BEACHHEAD_DOMAIN#https://}"
-BEACHHEAD_DOMAIN="${BEACHHEAD_DOMAIN%%/*}"
-BEACHHEAD_DOMAIN="$(echo "$BEACHHEAD_DOMAIN" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-
-# Validate hostname format (basic check — must have at least one dot and a
-# plausible TLD; Let's Encrypt can't issue for a bare label anyway).
-if ! echo "$BEACHHEAD_DOMAIN" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}$'; then
-  warn "Hostname '${BEACHHEAD_DOMAIN}' may not be valid. Continuing anyway."
-fi
-
-# Warn on an in-place hostname change: the old cert doesn't cover the new name,
-# so acme-companion has to issue a fresh one and DNS must already point here.
-if [[ -n "$BEACHHEAD_DOMAIN_DEFAULT" && "$BEACHHEAD_DOMAIN" != "$BEACHHEAD_DOMAIN_DEFAULT" ]]; then
-  warn "Hostname changed: ${BEACHHEAD_DOMAIN_DEFAULT} → ${BEACHHEAD_DOMAIN}"
-  warn "A new SSL certificate will be issued once DNS for ${BEACHHEAD_DOMAIN} points here."
-fi
-
+# Beachhead will be served at beachhead.<root-domain>
+BEACHHEAD_DOMAIN="beachhead.${ROOT_DOMAIN}"
 info "Beachhead will be available at: https://${BEACHHEAD_DOMAIN}"
 
 # Email for LetsEncrypt
@@ -310,6 +272,18 @@ echo ""
 read -rp "$(echo -e "${CYAN}▸${NC}") Default GitHub webhook secret (leave blank to skip): " GITHUB_WEBHOOK_SECRET
 GITHUB_WEBHOOK_SECRET="${GITHUB_WEBHOOK_SECRET:-}"
 
+# Host-side API port — used for direct/health-check access to beachhead-api.
+# Production traffic always goes through nginx-proxy on 80/443 regardless of this
+# value; this only matters if something else on the host already occupies 3000.
+# Reuse existing value if .env already exists.
+if [[ -f .env ]] && grep -q "^BEACHHEAD_API_PORT=" .env; then
+  BEACHHEAD_API_PORT=$(grep "^BEACHHEAD_API_PORT=" .env | cut -d'=' -f2)
+  info "Reusing existing API port from .env: ${BEACHHEAD_API_PORT}"
+else
+  read -rp "$(echo -e "${CYAN}▸${NC}") Host port for direct API access [3000]: " BEACHHEAD_API_PORT
+  BEACHHEAD_API_PORT="${BEACHHEAD_API_PORT:-3000}"
+fi
+
 # Deploy base dir — Linux uses /var/beachhead/deployments (system-wide, needs sudo);
 # macOS uses ~/beachhead/deployments (user-writable, under /Users which Docker Desktop
 # shares with the VM by default).
@@ -330,10 +304,12 @@ fi
 
 echo ""
 echo -e "${BOLD}Summary${NC}"
+echo "  Root domain: ${ROOT_DOMAIN}"
 echo "  Beachhead:   https://${BEACHHEAD_DOMAIN}"
 echo "  Email:       ${LETSENCRYPT_EMAIL}"
 echo "  Webhook:     ${GITHUB_WEBHOOK_SECRET:-<not set>}"
 echo "  Deploy dir:  ${DEPLOY_BASE_DIR}"
+echo "  API port:    ${BEACHHEAD_API_PORT} (host-side, direct access only)"
 echo ""
 read -rp "$(echo -e "${CYAN}▸${NC}") Proceed with installation? [Y/n] " CONFIRM
 CONFIRM="${CONFIRM:-Y}"
@@ -352,6 +328,7 @@ cat > .env <<EOF
 # Beachhead Configuration — generated by install.sh
 NODE_ENV=production
 PORT=3000
+BEACHHEAD_API_PORT=${BEACHHEAD_API_PORT}
 
 # Domain
 BEACHHEAD_DOMAIN=${BEACHHEAD_DOMAIN}
@@ -471,7 +448,7 @@ echo ""
 
 info "Waiting for Beachhead API to become healthy..."
 RETRIES=30
-until curl -sf http://localhost:3000/api/health &>/dev/null || [[ $RETRIES -eq 0 ]]; do
+until curl -sf "http://localhost:${BEACHHEAD_API_PORT}/api/health" &>/dev/null || [[ $RETRIES -eq 0 ]]; do
   sleep 2
   RETRIES=$((RETRIES - 1))
 done
