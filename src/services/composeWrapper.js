@@ -139,14 +139,26 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
     }
   }
 
-  // Inject additional env vars targeted at each service
+  // Inject env vars that name a target service.
+  //
+  // Vars with NO target_service are GLOBAL: they are written to .env, where
+  // Compose picks them up for ${VAR} interpolation and for env_file. They must
+  // NOT be injected here as well - the previous behaviour defaulted them to
+  // publicService, so every global silently landed in the public container's
+  // environment (usually the frontend, which has no use for a database password
+  // or an API key) while the service that actually needed it relied entirely on
+  // .env.
   if (envVars && envVars.length > 0) {
-    // Group env vars by target service
     const serviceEnvs = {};
     for (const ev of envVars) {
-      const target = ev.target_service || publicService;
+      if (!ev.target_service) continue; // global - handled by .env
+      if (ev.env_file_id) continue;     // belongs to an explicit env file
+      const target = ev.target_service;
       if (!serviceEnvs[target]) serviceEnvs[target] = [];
-      serviceEnvs[target].push(`${ev.key}=${ev.value}`);
+      // Push as an object entry rather than a "KEY=value" string: the string
+      // form is re-parsed by Compose at the first '=', and any value containing
+      // YAML-significant characters had to survive serialisation intact.
+      serviceEnvs[target].push({ key: ev.key, value: String(ev.value ?? '') });
     }
 
     for (const [service, vars] of Object.entries(serviceEnvs)) {
@@ -154,13 +166,19 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
         override.services[service] = {
           container_name: `${slug}-${service}${suffix}`,
           restart: 'unless-stopped',
-          environment: [],
         };
       }
-      if (!override.services[service].environment) {
-        override.services[service].environment = [];
-      }
-      override.services[service].environment.push(...vars);
+      // Map form. Values are emitted by the YAML serialiser, which quotes
+      // whatever needs quoting - so spaces, ':' and '#' survive untouched.
+      const existing = override.services[service].environment;
+      const asMap = Array.isArray(existing)
+        ? Object.fromEntries(existing.map((e) => {
+            const i = String(e).indexOf('=');
+            return i === -1 ? [String(e), ''] : [String(e).slice(0, i), String(e).slice(i + 1)];
+          }))
+        : (existing || {});
+      for (const { key, value } of vars) asMap[key] = value;
+      override.services[service].environment = asMap;
     }
   }
 

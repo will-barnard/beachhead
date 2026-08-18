@@ -31,13 +31,29 @@ async function transition(deployment, state, logMsg) {
 
 /**
  * Safely quote a value for a .env file.
- * Wraps in single quotes if it contains newlines, quotes, or shell-special chars.
+ *
+ * Quotes anything that is not a plain bare token. The previous version only
+ * quoted newlines, quotes and shell metacharacters, which left values
+ * containing SPACES unquoted:
+ *
+ *   EMAIL_FROM=Chicago Electric Piano <no-reply@example.com>
+ *
+ * Whether that survives depends on which .env parser reads it - Docker
+ * Compose's interpolation parser, its env_file parser, docker --env-file, and
+ * dotenv all differ, and older versions differ again. Quoting removes the
+ * question entirely:
+ *
+ *   EMAIL_FROM='Chicago Electric Piano <no-reply@example.com>'
+ *
+ * Bare tokens are left unquoted so existing values (URLs, keys, hostnames)
+ * render unchanged and diffs stay readable.
  */
+const BARE_ENV_TOKEN = /^[A-Za-z0-9_.@:\/+=-]*$/;
+
 function envQuote(value) {
-  if (/[\n\r"'\\$`!#]/.test(value)) {
-    return `'${value.replace(/'/g, "'\\''")}'`;
-  }
-  return value;
+  const str = String(value ?? '');
+  if (BARE_ENV_TOKEN.test(str)) return str;
+  return `'${str.replace(/'/g, "'\\''")}'`;
 }
 
 const BUILD_JOB_POLL_INTERVAL = 3000;   // how often to check if remote builds are done
@@ -218,7 +234,20 @@ async function processDeployment(deployment) {
     // Write a .env file for any unscoped env vars (many apps read from .env)
     const globalEnvVars = envVars.filter((v) => !v.target_service && !v.env_file_id);
     if (globalEnvVars.length > 0) {
-      const envContent = globalEnvVars.map((v) => `${v.key}=${envQuote(v.value)}`).join('\n');
+      // UNIQUE(app_id, key, target_service) does not constrain rows where
+      // target_service IS NULL, because Postgres treats NULLs as distinct. That
+      // let duplicate globals accumulate. Keep the last write and say so, so a
+      // stale duplicate cannot silently win.
+      const seen = new Map();
+      for (const v of globalEnvVars) {
+        if (seen.has(v.key)) {
+          logger.warn(`[deploy #${deployment.id}] duplicate global env var ${v.key} - using the most recently written value`);
+        }
+        seen.set(v.key, v);
+      }
+      const deduped = [...seen.values()];
+      logger.info(`[deploy #${deployment.id}] writing .env with ${deduped.length} var(s): ${deduped.map((v) => v.key).join(', ')}`);
+      const envContent = deduped.map((v) => `${v.key}=${envQuote(v.value)}`).join('\n') + '\n';
       const envPath = path.join(deployDir, '.env');
       fs.writeFileSync(envPath, envContent, 'utf8');
       fs.chmodSync(envPath, 0o600);
@@ -726,4 +755,4 @@ function stop() {
   logger.info('Deployment worker stopped');
 }
 
-module.exports = { start, stop };
+module.exports = { start, stop, envQuote };
