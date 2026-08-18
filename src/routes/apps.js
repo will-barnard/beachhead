@@ -501,6 +501,8 @@ async function regenerateOverride(app, dep = null) {
     proxyNetwork: appProxyNetwork,
     staticPorts,
     lanBindIp,
+    allServices: readAllServiceNames(deployDir),
+    statefulServices,
   });
   writeOverrideFile(deployDir, overrideContent);
 

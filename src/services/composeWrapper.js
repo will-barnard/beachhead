@@ -22,7 +22,7 @@ const logger = require('../logger');
  * stagingHost: optional fully-qualified hostname (e.g. "acme.dev.example.com")
  * that the public service should also respond to. Gets its own LE cert.
  */
-function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides, stagingHost, stagingOnly, proxyNetwork, staticPorts, lanBindIp }) {
+function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides, stagingHost, stagingOnly, proxyNetwork, staticPorts, lanBindIp, allServices, statefulServices }) {
   if (!publicService || !domain) {
     throw new Error('publicService and domain are required for compose override');
   }
@@ -225,6 +225,31 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
       }
       if (!override.services[sp.service].ports.includes(mapping)) {
         override.services[sp.service].ports.push(mapping);
+      }
+    }
+  }
+
+  // Give EVERY service a stable, app-prefixed container name.
+  //
+  // Only a handful of services previously got one - the public service, extra
+  // endpoints, and any service that happened to have a targeted env var or an
+  // image override. Everything else fell back to Compose's default
+  // `<project>-<service>-<n>`, producing names like `deploy-129-backend-1`
+  // that say nothing about which app they belong to. On a multi-app host that
+  // makes `docker ps` almost unreadable.
+  //
+  // Stateful services are excluded: they run under a separate long-lived
+  // compose project ({slug}-stateful) and are already named by it.
+  if (Array.isArray(allServices) && allServices.length > 0) {
+    const stateful = new Set(Array.isArray(statefulServices) ? statefulServices : []);
+    for (const service of allServices) {
+      if (stateful.has(service)) continue;
+      if (!override.services[service]) override.services[service] = {};
+      if (!override.services[service].container_name) {
+        override.services[service].container_name = `${slug}-${service}${suffix}`;
+      }
+      if (!override.services[service].restart) {
+        override.services[service].restart = 'unless-stopped';
       }
     }
   }

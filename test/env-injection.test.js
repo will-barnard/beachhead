@@ -176,7 +176,47 @@ check('mixed globals and targeted vars are separated correctly', () => {
   assert.ok(!all.includes('GLOBAL_ONE'), 'global leaked into a service');
 });
 
-console.log('\n3. mapWithConcurrency (startup recovery)');
+console.log('\n3. container naming');
+
+check('every non-stateful service gets an app-prefixed name', () => {
+  // Services with no endpoint, no targeted env var and no image override used
+  // to get no container_name at all, so Compose fell back to
+  // `<project>-<service>-<n>` - e.g. `deploy-129-backend-1`, which says nothing
+  // about which app it belongs to.
+  const doc = yaml.load(generateOverride({
+    ...base, envVars: [],
+    allServices: ['frontend', 'backend', 'verifier', 'db'],
+    statefulServices: ['db'],
+  }));
+  assert.strictEqual(doc.services.frontend.container_name, 'admit-frontend-d7');
+  assert.strictEqual(doc.services.backend.container_name, 'admit-backend-d7');
+  assert.strictEqual(doc.services.verifier.container_name, 'admit-verifier-d7');
+});
+
+check('stateful services are left alone (separate compose project)', () => {
+  const doc = yaml.load(generateOverride({
+    ...base, envVars: [],
+    allServices: ['frontend', 'backend', 'db'],
+    statefulServices: ['db'],
+  }));
+  assert.ok(!doc.services.db, 'db should not be named by the per-deploy override');
+});
+
+check('every named service also gets a restart policy', () => {
+  const doc = yaml.load(generateOverride({
+    ...base, envVars: [],
+    allServices: ['frontend', 'backend'], statefulServices: [],
+  }));
+  assert.strictEqual(doc.services.backend.restart, 'unless-stopped');
+});
+
+check('omitting allServices keeps the old behaviour', () => {
+  const doc = yaml.load(generateOverride({ ...base, envVars: [] }));
+  assert.ok(doc.services.frontend.container_name, 'public service still named');
+  assert.ok(!doc.services.backend, 'no extra services invented');
+});
+
+console.log('\n4. mapWithConcurrency (startup recovery)');
 
 async function concurrencyChecks() {
   await (async () => {

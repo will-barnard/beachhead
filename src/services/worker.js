@@ -234,12 +234,17 @@ async function processDeployment(deployment) {
       proxyNetwork: appProxyNetwork,
       staticPorts,
       lanBindIp,
+      allServices: readAllServiceNames(deployDir),
+      statefulServices,
     });
     writeOverrideFile(deployDir, overrideContent);
 
     // Write a .env file for any unscoped env vars (many apps read from .env)
+    // Always write .env, even when empty. An app whose compose file declares
+    // `env_file: - .env` fails to start if the file is missing, and "no
+    // app-wide env vars yet" is a perfectly normal state for a new app.
     const globalEnvVars = envVars.filter((v) => !v.target_service && !v.env_file_id);
-    if (globalEnvVars.length > 0) {
+    {
       // UNIQUE(app_id, key, target_service) does not constrain rows where
       // target_service IS NULL, because Postgres treats NULLs as distinct. That
       // let duplicate globals accumulate. Keep the last write and say so, so a
@@ -252,7 +257,11 @@ async function processDeployment(deployment) {
         seen.set(v.key, v);
       }
       const deduped = [...seen.values()];
-      logger.info(`[deploy #${deployment.id}] writing .env with ${deduped.length} var(s): ${deduped.map((v) => v.key).join(', ')}`);
+      logger.info(
+        deduped.length > 0
+          ? `[deploy #${deployment.id}] writing .env with ${deduped.length} app-wide var(s): ${deduped.map((v) => v.key).join(', ')}`
+          : `[deploy #${deployment.id}] writing empty .env (no app-wide vars configured)`
+      );
       const envContent = deduped.map((v) => `${v.key}=${envQuote(v.value)}`).join('\n') + '\n';
       const envPath = path.join(deployDir, '.env');
       fs.writeFileSync(envPath, envContent, 'utf8');
@@ -317,6 +326,8 @@ async function processDeployment(deployment) {
           proxyNetwork: appProxyNetwork,
           staticPorts,
           lanBindIp,
+          allServices: readAllServiceNames(deployDir),
+          statefulServices,
         });
         writeOverrideFile(deployDir, updatedOverride);
         fs.chmodSync(path.join(deployDir, 'beachhead.override.yml'), 0o600);
@@ -506,6 +517,10 @@ async function regenerateOverride({ app, deployment, deployDir, publicService, p
   }));
   const staticPorts = await ServicePorts.findEnabledByAppId(app.id);
   const lanBindIp = await Settings.getLanBindIp();
+  // Stateful services run under their own long-lived compose project, so they
+  // must be excluded from the per-deploy container naming.
+  const bhCfg = readBeachheadConfig(deployDir);
+  const statefulServices = Array.isArray(bhCfg?.stateful_services) ? bhCfg.stateful_services : [];
   let stagingHost = null;
   if (app.staging_subdomain) {
     const stagingRoot = await Settings.getStagingRootDomain();
@@ -527,6 +542,8 @@ async function regenerateOverride({ app, deployment, deployDir, publicService, p
     proxyNetwork: proxyNetworkName,
     staticPorts,
     lanBindIp,
+    allServices: readAllServiceNames(deployDir),
+    statefulServices,
   });
   writeOverrideFile(deployDir, overrideContent);
   fs.chmodSync(path.join(deployDir, 'beachhead.override.yml'), 0o600);
