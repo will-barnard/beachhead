@@ -600,7 +600,19 @@
       <div v-if="envVars.length === 0" style="color:var(--muted); font-size:0.85rem;">No variables set.</div>
       <div v-for="ev in envVars" :key="ev.id" style="display:flex; justify-content:space-between; align-items:center; padding:0.375rem 0; border-bottom:1px solid var(--border); gap:0.5rem;">
         <div v-if="editingEnvId !== ev.id" style="flex:1; min-width:0;">
-          <code style="font-size:0.8rem; word-break:break-all;">{{ ev.key }}={{ ev.value }}<span v-if="ev.target_service" style="color:var(--muted);"> ({{ ev.target_service }})</span></code>
+          <code style="font-size:0.8rem; word-break:break-all;">{{ ev.key }}={{ ev.value }}</code>
+          <span
+            :title="ev.target_service
+              ? 'Injected into the ' + ev.target_service + ' service only. NOT written to .env, so ${' + ev.key + '} in docker-compose.yml will be empty.'
+              : 'Written to this app\'s .env. Available to ${' + ev.key + '} substitution and to any service using env_file.'"
+            :style="{
+              marginLeft: '0.5rem', fontSize: '0.7rem', padding: '0.1rem 0.4rem',
+              borderRadius: '3px', whiteSpace: 'nowrap',
+              background: ev.target_service ? 'var(--border)' : 'transparent',
+              color: 'var(--muted)',
+              border: '1px solid var(--border)'
+            }"
+          >{{ ev.target_service ? ev.target_service + ' only' : 'app-wide (.env)' }}</span>
         </div>
         <div v-else style="display:flex; align-items:center; gap:0.25rem; flex:1; min-width:0;">
           <code style="font-size:0.8rem; white-space:nowrap;">{{ ev.key }}=</code>
@@ -620,9 +632,20 @@
       <div style="display:flex; gap:0.5rem; margin-top:0.75rem;">
         <input v-model="newEnv.key" placeholder="KEY" style="flex:1;" />
         <input v-model="newEnv.value" placeholder="value" style="flex:2;" />
-        <input v-model="newEnv.target_service" placeholder="service (optional)" style="flex:1;" />
+        <input v-model="newEnv.target_service" placeholder="leave blank for app-wide" style="flex:1;" />
         <button class="btn btn-sm" @click="addEnv">Add</button>
       </div>
+      <p style="color:var(--muted); font-size:0.75rem; margin-top:0.5rem; line-height:1.5;">
+        Variables are always scoped to <strong>this app only</strong> — nothing is shared between apps on this host.
+        <br />
+        <strong>Leave the last field blank</strong> to write the variable to this app's <code>.env</code>. That is what
+        <code>${'{'}VAR{'}'}</code> substitution in <code>docker-compose.yml</code> reads, and what <code>env_file</code> passes
+        to a container. This is what you want in almost every case.
+        <br />
+        Name a service only to inject the variable into that one container's environment. It is then
+        <strong>not</strong> written to <code>.env</code>, so any <code>${'{'}VAR{'}'}</code> reference in your compose file
+        resolves to an empty string.
+      </p>
     </div>
 
     <!-- Deployments -->

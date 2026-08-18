@@ -2,7 +2,7 @@
 
 ## Quick reference — paste this to an AI when building a Beachhead-compatible app
 
-> **Deploying on Beachhead** — include a beachhead.json in the repo root specifying public_service (the service name that handles HTTP, e.g. frontend) and public_port (e.g. 80). In docker-compose.yml: no version: key; use expose: not ports: for all services (Beachhead's nginx-proxy handles routing); do NOT set container_name on any service (Beachhead sets unique names per deployment via its override — a hardcoded name will conflict and crash the deploy); **all services must be on an explicitly named internal network** (e.g. `networks: [internal]` on every service plus a `networks: {internal:}` top-level entry) — without this, Beachhead's override replaces the implicit default network on the frontend, cutting it off from the backend (DNS resolves but connection fails); postgres healthcheck must have start_period: 30s; database volume must use a fixed name: (e.g. name: myapp-postgres) — without it every redeploy creates a fresh volume and wipes the database; frontend nginx must proxy to backend by Docker service name (not localhost). IMPORTANT: nginx resolves upstream hostnames at config load time — if the backend container isn't ready yet, nginx will crash with "host not found in upstream". Fix this by using Docker's embedded DNS resolver and a variable for proxy_pass so resolution happens at request time, not startup. In nginx.conf use: `resolver 127.0.0.11 valid=30s; set $backend_upstream http://backend:3001; proxy_pass $backend_upstream;` instead of a bare `proxy_pass http://backend:3001;`. Set DB_PASSWORD and any vars shared between services as global env vars in the Beachhead dashboard (no Target Service) so they're written to .env for Docker Compose variable substitution. Use npm install not npm ci in Dockerfiles.
+> **Deploying on Beachhead** — include a beachhead.json in the repo root specifying public_service (the service name that handles HTTP, e.g. frontend) and public_port (e.g. 80). In docker-compose.yml: no version: key; use expose: not ports: for all services (Beachhead's nginx-proxy handles routing); do NOT set container_name on any service (Beachhead sets unique names per deployment via its override — a hardcoded name will conflict and crash the deploy); **all services must be on an explicitly named internal network** (e.g. `networks: [internal]` on every service plus a `networks: {internal:}` top-level entry) — without this, Beachhead's override replaces the implicit default network on the frontend, cutting it off from the backend (DNS resolves but connection fails); postgres healthcheck must have start_period: 30s; database volume must use a fixed name: (e.g. name: myapp-postgres) — without it every redeploy creates a fresh volume and wipes the database; frontend nginx must proxy to backend by Docker service name (not localhost). IMPORTANT: nginx resolves upstream hostnames at config load time — if the backend container isn't ready yet, nginx will crash with "host not found in upstream". Fix this by using Docker's embedded DNS resolver and a variable for proxy_pass so resolution happens at request time, not startup. In nginx.conf use: `resolver 127.0.0.11 valid=30s; set $backend_upstream http://backend:3001; proxy_pass $backend_upstream;` instead of a bare `proxy_pass http://backend:3001;`. Set DB_PASSWORD and any var referenced as ${VAR} in docker-compose.yml as an app-wide env var in the Beachhead dashboard (leave Target Service blank) so it's written to .env for Compose variable substitution — a service-targeted var is NOT written to .env and ${VAR} silently resolves to an empty string. Note "app-wide" means within this app: env vars are never shared between apps. Use npm install not npm ci in Dockerfiles.
 
 ---
 
@@ -10,7 +10,7 @@
 
 1. Clones your repo into a fresh directory per deployment
 2. Writes a `beachhead.override.yml` that adds `VIRTUAL_HOST`, `VIRTUAL_PORT`, `LETSENCRYPT_HOST` to your public service, connects it to the app's dedicated proxy network (`bh-app-{id}`, isolated from other apps to prevent service-name DNS collisions), and sets a unique `container_name` per deployment
-3. Writes a `.env` file in the repo root from any **global** env vars you've configured in the dashboard
+3. Writes a `.env` file in the repo root from this app's **app-wide** env vars (those with no Target Service)
 4. Runs `docker compose -f docker-compose.yml -f beachhead.override.yml up -d --build`
 5. Health-checks your domain over HTTPS
 6. On success, stops the previous deployment's containers
@@ -156,16 +156,23 @@ The service name resolves on the compose default network. Do **not** use `localh
 Beachhead writes env vars to a `.env` file in the cloned repo root before running `docker compose`. Docker Compose reads this file for `${VAR}` substitution in `docker-compose.yml`.
 
 **Key rules:**
-- **Global env vars** (no Target Service set) → written to `.env` → available for `${VAR}` substitution in `docker-compose.yml` (e.g. `DB_PASSWORD`, `JWT_SECRET`)
-- **Targeted env vars** (Target Service = `backend`) → injected directly into that service's environment in the override — useful for secrets that only one service needs and shouldn't be in `.env`
-- Variables used by multiple services (like `DB_PASSWORD` shared by postgres and backend) must be **global** so they land in `.env`
+> **"Global" means app-wide, not host-wide.** Every environment variable in
+> Beachhead belongs to exactly one app — the `env_vars` table is keyed on
+> `app_id`, and `.env` is written per deployment to
+> `app-<id>/deploy-<n>/.env`. There is no mechanism for sharing a variable
+> between apps. The distinction below is only about *where inside your app* the
+> value is delivered.
+
+- **App-wide env vars** (Target Service left blank) → written to this app's `.env` → available for `${VAR}` substitution in `docker-compose.yml`, and to any service using `env_file` (e.g. `DB_PASSWORD`, `JWT_SECRET`). **This is what you want in almost every case.**
+- **Service-scoped env vars** (Target Service = `backend`) → injected into that one service's environment in the override, and **not** written to `.env`. Any `${VAR}` reference in your compose file will therefore resolve to an empty string. Use only when a value must be kept out of `.env` and exactly one container needs it.
+- Variables used by multiple services (like `DB_PASSWORD` shared by postgres and backend), and anything referenced as `${VAR}` in compose, must be **app-wide** so they land in `.env`
 
 ### Typical env vars to configure
 | Key | Target | Notes |
 |-----|--------|-------|
-| `DB_PASSWORD` | *(global)* | Used by both postgres and backend |
-| `JWT_SECRET` | *(global)* or `backend` | Only needed by backend |
-| `CORS_ORIGIN` | *(global)* or `backend` | Set to `https://your.domain` |
+| `DB_PASSWORD` | *(app-wide)* | Used by both postgres and backend |
+| `JWT_SECRET` | *(app-wide)* or `backend` | Only needed by backend |
+| `CORS_ORIGIN` | *(app-wide)* or `backend` | Set to `https://your.domain` |
 | `NODE_ENV` | `backend` | `production` |
 
 ---
@@ -246,7 +253,7 @@ volumes:
 | `backend could not be resolved` / 502 on all API calls | No explicit internal network — Beachhead's override replaces the frontend's implicit default network, cutting it off from the backend | Add `networks: [internal]` to every service and `networks: {internal:}` at the top level |
 | `dependency failed to start: container is unhealthy` | Postgres health check fires before init completes | Add `start_period: 30s` to healthcheck |
 | 502 from nginx after redeploy | Old frontend container still attached to the app's proxy network, proxying to a backend that no longer exists | Beachhead auto-cleans up on success; for manual recovery `docker stop <old-frontend-container>` |
-| `${DB_PASSWORD}` empty in postgres | Env var is targeted to `backend` only, not written to `.env` | Set `DB_PASSWORD` as a global env var (no target service) |
+| `${DB_PASSWORD}` empty in postgres | Env var is targeted to `backend` only, not written to `.env` | Set `DB_PASSWORD` as an app-wide env var (leave Target Service blank) |
 | Data wiped on every deploy / logged out after redeploy | Volume uses `driver: local` with no `name:` | Replace with `name: myapp-postgres` — `driver: local` scopes the volume to the deploy directory |
 | Container name conflict on redeploy / deploy fails at STARTING_CONTAINERS | `container_name` hardcoded in `docker-compose.yml`, conflicts with still-running previous deploy | Remove all `container_name` entries — Beachhead sets unique names per deployment via its override |
 | Port conflict or deploy fails | `ports:` binding a host port that's already in use | Replace `ports:` with `expose:` for all services |
