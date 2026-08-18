@@ -15,7 +15,7 @@
 
 const assert = require('assert');
 const yaml = require('js-yaml');
-const { envQuote } = require('../src/services/worker');
+const { envQuote, mapWithConcurrency } = require('../src/services/worker');
 const { generateOverride } = require('../src/services/composeWrapper');
 
 let pass = 0, fail = 0;
@@ -176,5 +176,52 @@ check('mixed globals and targeted vars are separated correctly', () => {
   assert.ok(!all.includes('GLOBAL_ONE'), 'global leaked into a service');
 });
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log('\n3. mapWithConcurrency (startup recovery)');
+
+async function concurrencyChecks() {
+  await (async () => {
+    const order = [];
+    await mapWithConcurrency([1, 2, 3, 4, 5], 2, async (n) => {
+      order.push(n);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    check('processes every item', () => assert.deepStrictEqual(order.sort(), [1, 2, 3, 4, 5]));
+  })();
+
+  await (async () => {
+    let inFlight = 0, peak = 0;
+    await mapWithConcurrency([...Array(12).keys()], 3, async () => {
+      inFlight += 1; peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight -= 1;
+    });
+    check('never exceeds the concurrency limit', () => assert.ok(peak <= 3, `peak was ${peak}`));
+    check('actually runs concurrently (not serial)', () => assert.ok(peak > 1, `peak was ${peak}`));
+  })();
+
+  await (async () => {
+    // A slow app must not stop the others - this is the whole point. Serial
+    // recovery over five apps is what made a queued deploy wait ~15 minutes.
+    const done = [];
+    const t0 = Date.now();
+    await mapWithConcurrency([50, 5, 5, 5], 3, async (ms) => {
+      await new Promise((r) => setTimeout(r, ms));
+      done.push(ms);
+    });
+    const elapsed = Date.now() - t0;
+    check('a slow item does not block the rest', () => assert.strictEqual(done[0], 5, JSON.stringify(done)));
+    check('total time is bounded by the slowest, not the sum', () => assert.ok(elapsed < 65, `${elapsed}ms`));
+  })();
+
+  await (async () => {
+    await mapWithConcurrency([], 3, async () => { throw new Error('should not run'); });
+    check('handles an empty list', () => assert.ok(true));
+  })();
+}
+
+concurrencyChecks().then(() => {
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+});
+
+

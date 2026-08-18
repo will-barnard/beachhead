@@ -24,6 +24,12 @@ const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 min — mark stuck deployments 
 
 let running = false;
 
+// Apps currently being reconciled by startup recovery. Startup recovery and a
+// real deployment must never `compose up` the same app at the same time - they
+// would fight over the same container names. A deployment for an app in this
+// set is deferred back to PENDING and picked up on a later poll.
+const reconciling = new Set();
+
 async function transition(deployment, state, logMsg) {
   logger.info(`[deploy #${deployment.id}] ${state}: ${logMsg || ''}`);
   return Deployments.updateState(deployment.id, state, `[${state}] ${logMsg || ''}`);
@@ -584,6 +590,13 @@ async function poll() {
 
     const job = await Deployments.getNextPending();
     if (job) {
+      if (reconciling.has(job.app_id)) {
+        await Deployments.updateState(job.id, STATES.PENDING, '[PENDING] Waiting — startup recovery in progress for this app');
+        logger.info(`[deploy #${job.id}] Deferred — startup recovery in progress for app ${job.app_id}`);
+        if (running) setTimeout(poll, POLL_INTERVAL);
+        return;
+      }
+
       // Check if this app already has an active (non-terminal) deployment
       const hasActive = await Deployments.hasActiveForApp(job.app_id, job.id);
       if (hasActive) {
@@ -608,10 +621,25 @@ async function poll() {
  * Does NOT tear down stale deployments — that's handled by the prune system on
  * demand so startup stays fast.
  */
+/** Run `worker` over `items` with at most `limit` in flight. */
+async function mapWithConcurrency(items, limit, worker) {
+  const queue = [...items];
+  const runners = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+    while (queue.length) await worker(queue.shift());
+  });
+  await Promise.all(runners);
+}
+
+// Docker operations are I/O bound, but reconciling every app at once would
+// hammer a small VM. Three at a time keeps startup quick without thrashing.
+const STARTUP_CONCURRENCY = 3;
+
 async function startupCleanup() {
   try {
     const apps = await Apps.findAll();
-    for (const app of apps) {
+    const startedAt = Date.now();
+
+    await mapWithConcurrency(apps, STARTUP_CONCURRENCY, async (app) => {
       // Don't bring paused apps back up. The pause placeholder has its own
       // --restart unless-stopped policy and Docker will revive it on its own.
       // Without this guard, a hard reset would re-launch a paused app's stateful
@@ -620,7 +648,7 @@ async function startupCleanup() {
       // loop keep consuming the VM after pause.
       if (app.paused) {
         logger.info(`[startup] Skipping paused app ${app.name}`);
-        continue;
+        return;
       }
 
       // Prefer the explicitly tracked active deployment; fall back to last successful
@@ -628,13 +656,25 @@ async function startupCleanup() {
         ? await Deployments.findById(app.active_deployment_id)
         : await Deployments.findLastSuccessful(app.id, -1);
 
-      if (!current) continue;
+      if (!current) return;
 
       const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${current.id}`);
       const overridePath = path.join(deployDir, 'beachhead.override.yml');
-      if (!fs.existsSync(overridePath)) continue;
+      if (!fs.existsSync(overridePath)) return;
 
+      // Claim the app BEFORE the first await. poll() checks this set, so
+      // claiming first closes the window where a deployment could be picked up
+      // between the check below and the claim.
+      reconciling.add(app.id);
+      const appStartedAt = Date.now();
       try {
+        // A queued or in-flight deployment supersedes "make the old one run".
+        // Reconciling underneath it would fight over container names.
+        if (await Deployments.hasActiveForApp(app.id, -1)) {
+          logger.info(`[startup] Skipping ${app.name} — a deployment is already in progress`);
+          return;
+        }
+
         logger.info(`[startup] Ensuring deployment #${current.id} is running for ${app.name}`);
         // Make sure the shared infra network exists (defensive — usually
         // created by Beachhead's own compose stack) and that this app's
@@ -688,10 +728,15 @@ async function startupCleanup() {
         // Guards against crashes mid-deploy that leave old containers registered
         // with nginx-proxy under the same VIRTUAL_HOST.
         await stopOtherDeployContainers(app.id, current.id);
+        logger.info(`[startup] ${app.name} ready in ${Math.round((Date.now() - appStartedAt) / 1000)}s`);
       } catch (err) {
         logger.warn(`[startup] Could not start deployment #${current.id} for ${app.name}: ${err.message}`);
+      } finally {
+        reconciling.delete(app.id);
       }
-    }
+    });
+
+    logger.info(`[startup] Recovery finished for ${apps.length} app(s) in ${Math.round((Date.now() - startedAt) / 1000)}s`);
   } catch (err) {
     logger.error('Startup cleanup failed', err);
   }
@@ -747,7 +792,24 @@ function start() {
   if (running) return;
   running = true;
   logger.info('Deployment worker started');
-  Promise.all([startupCleanup(), startupStaticSites()]).finally(() => poll());
+
+  // Start polling for queued deployments IMMEDIATELY.
+  //
+  // This used to be `Promise.all([...]).finally(() => poll())`, so the queue was
+  // not read until startup recovery had finished reconciling every app - a
+  // serial walk doing `docker compose up` per app. On a five app host that was
+  // roughly fifteen minutes during which a deployment triggered from the
+  // dashboard simply sat in PENDING with nothing in the logs to explain it.
+  //
+  // Recovery now runs concurrently. The `reconciling` set keeps the two from
+  // touching the same app at once: a deployment for an app being reconciled is
+  // deferred back to PENDING, and recovery skips any app that already has a
+  // deployment in flight.
+  poll();
+
+  Promise.all([startupCleanup(), startupStaticSites()]).catch((err) => {
+    logger.error('Startup recovery failed', err);
+  });
 }
 
 function stop() {
@@ -755,4 +817,4 @@ function stop() {
   logger.info('Deployment worker stopped');
 }
 
-module.exports = { start, stop, envQuote };
+module.exports = { start, stop, envQuote, mapWithConcurrency };
