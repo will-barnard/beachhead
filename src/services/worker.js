@@ -240,44 +240,80 @@ async function processDeployment(deployment) {
     writeOverrideFile(deployDir, overrideContent);
 
     // Write a .env file for any unscoped env vars (many apps read from .env)
-    // Always write .env, even when empty. An app whose compose file declares
-    // `env_file: - .env` fails to start if the file is missing, and "no
-    // app-wide env vars yet" is a perfectly normal state for a new app.
-    const globalEnvVars = envVars.filter((v) => !v.target_service && !v.env_file_id);
-    {
-      // UNIQUE(app_id, key, target_service) does not constrain rows where
-      // target_service IS NULL, because Postgres treats NULLs as distinct. That
-      // let duplicate globals accumulate. Keep the last write and say so, so a
-      // stale duplicate cannot silently win.
+    // ── env files ──────────────────────────────────────────────────────
+    //
+    // Two sources write env files, and they can collide:
+    //
+    //   app-wide env vars  -> always written to .env
+    //   explicit env files -> written to whatever path the user chose
+    //
+    // Explicit files used to be written AFTER .env with no collision check, so
+    // an explicit file whose path was ".env" silently overwrote every app-wide
+    // variable. The app then booted with whatever that file happened to
+    // contain, and any app-wide var missing from it looked like it had never
+    // been set - with nothing in the logs to say why.
+    //
+    // They are now merged for a colliding path: app-wide vars first, explicit
+    // file entries layered on top (the user edited those most directly, so they
+    // win), and the overlap is logged.
+    const envFiles = await EnvFiles.getByAppId(app.id);
+
+    const dedupe = (vars, label) => {
       const seen = new Map();
-      for (const v of globalEnvVars) {
+      for (const v of vars) {
         if (seen.has(v.key)) {
-          logger.warn(`[deploy #${deployment.id}] duplicate global env var ${v.key} - using the most recently written value`);
+          logger.warn(`[deploy #${deployment.id}] duplicate ${label} var ${v.key} - keeping the most recent`);
         }
-        seen.set(v.key, v);
+        seen.set(v.key, v.value);
       }
-      const deduped = [...seen.values()];
-      logger.info(
-        deduped.length > 0
-          ? `[deploy #${deployment.id}] writing .env with ${deduped.length} app-wide var(s): ${deduped.map((v) => v.key).join(', ')}`
-          : `[deploy #${deployment.id}] writing empty .env (no app-wide vars configured)`
+      return seen;
+    };
+
+    const appWide = dedupe(
+      envVars.filter((v) => !v.target_service && !v.env_file_id),
+      'app-wide'
+    );
+
+    // Normalise so "./env", ".env" and "/.env" are recognised as the same file.
+    const isDotEnv = (p) => path.normalize(p.replace(/^\/+/, '')) === '.env';
+    const dotEnvFile = envFiles.find((f) => isDotEnv(f.path || ''));
+
+    if (dotEnvFile && dotEnvFile.vars && dotEnvFile.vars.length > 0) {
+      const explicit = dedupe(dotEnvFile.vars, `env file ${dotEnvFile.path}`);
+      const shadowed = [...explicit.keys()].filter((k) => appWide.has(k));
+      logger.warn(
+        `[deploy #${deployment.id}] env file "${dotEnvFile.path}" targets the same file as the app-wide variables. ` +
+        `Merging instead of overwriting${shadowed.length ? `; the env file overrides: ${shadowed.join(', ')}` : ''}.`
       );
-      const envContent = deduped.map((v) => `${v.key}=${envQuote(v.value)}`).join('\n') + '\n';
-      const envPath = path.join(deployDir, '.env');
-      fs.writeFileSync(envPath, envContent, 'utf8');
-      fs.chmodSync(envPath, 0o600);
+      for (const [k, v] of explicit) appWide.set(k, v);
     }
 
-    // Write any explicitly-defined env files to their specified paths
-    const envFiles = await EnvFiles.getByAppId(app.id);
+    // Always write .env, even when empty. An app declaring `env_file: - .env`
+    // fails to start if the file is missing, and "no app-wide vars yet" is a
+    // normal state for a new app.
+    logger.info(
+      appWide.size > 0
+        ? `[deploy #${deployment.id}] writing .env with ${appWide.size} var(s): ${[...appWide.keys()].join(', ')}`
+        : `[deploy #${deployment.id}] writing empty .env (no app-wide vars configured)`
+    );
+    const envPath = path.join(deployDir, '.env');
+    fs.writeFileSync(
+      envPath,
+      [...appWide].map(([k, v]) => `${k}=${envQuote(v)}`).join('\n') + '\n',
+      'utf8'
+    );
+    fs.chmodSync(envPath, 0o600);
+
+    // Write the remaining explicit env files to their own paths.
     for (const envFile of envFiles) {
+      if (envFile === dotEnvFile) continue; // already merged into .env above
       if (!envFile.vars || envFile.vars.length === 0) continue;
       const filePath = path.join(deployDir, envFile.path);
-      const fileDir = path.dirname(filePath);
-      fs.mkdirSync(fileDir, { recursive: true });
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
       const fileContent = envFile.vars.map((v) => `${v.key}=${envQuote(v.value)}`).join('\n') + '\n';
       fs.writeFileSync(filePath, fileContent, 'utf8');
       fs.chmodSync(filePath, 0o600);
+      logger.info(`[deploy #${deployment.id}] wrote env file ${envFile.path} with ${envFile.vars.length} var(s)`);
     }
 
     // Set restrictive permissions on override file (contains env vars)
