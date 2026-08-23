@@ -113,6 +113,8 @@ export default {
   deployStaticSiteFromGit: (id) => request(`/static-sites/${id}/deploy-from-git`, { method: 'POST', body: {} }),
   getStaticSiteLogs: (id) => request(`/static-sites/${id}/logs`),
   enableStaticSiteWww: (id) => request(`/static-sites/${id}/www`, { method: 'POST', body: {} }),
+  listIncomingStaticSites: () => request('/static-sites/incoming'),
+  importStaticSite: (id, folderName) => request(`/static-sites/${id}/import`, { method: 'POST', body: { path: folderName } }),
 
   // System
   getContainers: () => request('/system/containers'),

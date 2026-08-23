@@ -112,6 +112,36 @@
       </div>
       <div v-if="uploadMessage" style="margin-top:0.75rem; color:var(--success); font-size:0.85rem;">{{ uploadMessage }}</div>
       <div v-if="uploadError" style="margin-top:0.75rem; color:var(--danger); font-size:0.85rem;">{{ uploadError }}</div>
+
+      <!-- Large-site path: import from a folder already on the host ────── -->
+      <div style="margin-top:1.25rem; padding-top:1rem; border-top:1px solid var(--border);">
+        <h4 style="margin-bottom:0.5rem; font-size:0.9rem;">Or import from the server</h4>
+        <p style="color:var(--muted); font-size:0.85rem; margin-bottom:0.75rem;">
+          For sites too large to upload through the browser: <code>rsync</code> or <code>scp</code>
+          your build folder onto the Beachhead host, into
+          <code>$DEPLOY_BASE_DIR/static-sites-incoming/&lt;folder&gt;</code>, ahead of time. Then pick it
+          below — importing moves it straight into place (no re-upload, no size limit) and restarts
+          the container. The folder is consumed by the import, so re-import means re-syncing.
+        </p>
+        <div style="display:flex; gap:0.75rem; align-items:center; flex-wrap:wrap;">
+          <select v-model="selectedIncoming" :disabled="loadingIncoming || incoming.length === 0" style="min-width:260px;">
+            <option value="" disabled>
+              {{ loadingIncoming ? 'Checking...' : (incoming.length ? 'Select a folder…' : 'No folders found') }}
+            </option>
+            <option v-for="f in incoming" :key="f.name" :value="f.name">
+              {{ f.name }} ({{ formatBytes(f.sizeBytes) }}, synced {{ new Date(f.mtime).toLocaleString() }})
+            </option>
+          </select>
+          <button class="btn btn-sm" @click="loadIncoming" :disabled="loadingIncoming">
+            {{ loadingIncoming ? 'Refreshing...' : 'Refresh list' }}
+          </button>
+          <button class="btn" @click="importSelected" :disabled="!selectedIncoming || importing">
+            {{ importing ? 'Importing...' : 'Import & Deploy' }}
+          </button>
+        </div>
+        <div v-if="importMessage" style="margin-top:0.75rem; color:var(--success); font-size:0.85rem;">{{ importMessage }}</div>
+        <div v-if="importError" style="margin-top:0.75rem; color:var(--danger); font-size:0.85rem;">{{ importError }}</div>
+      </div>
     </div>
   </div>
 </template>
@@ -133,6 +163,12 @@ export default {
     uploadMessage: null,
     uploadError: null,
     logs: '',
+    incoming: [],
+    loadingIncoming: false,
+    selectedIncoming: '',
+    importing: false,
+    importMessage: null,
+    importError: null,
   }),
   computed: {
     stateBadgeClass() {
@@ -159,6 +195,47 @@ export default {
         this.error = e.message;
       } finally {
         this.loading = false;
+      }
+      if (this.site && this.site.source_type !== 'git') {
+        await this.loadIncoming();
+      }
+    },
+    async loadIncoming() {
+      this.loadingIncoming = true;
+      try {
+        this.incoming = await api.listIncomingStaticSites();
+      } catch {
+        // Best-effort — an empty/broken listing shouldn't block the page.
+        this.incoming = [];
+      } finally {
+        this.loadingIncoming = false;
+      }
+    },
+    formatBytes(bytes) {
+      if (bytes === null || bytes === undefined) return 'size unknown';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let n = bytes;
+      let i = 0;
+      while (n >= 1024 && i < units.length - 1) {
+        n /= 1024;
+        i++;
+      }
+      return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+    },
+    async importSelected() {
+      if (!this.selectedIncoming) return;
+      this.importing = true;
+      this.importMessage = null;
+      this.importError = null;
+      try {
+        const result = await api.importStaticSite(this.site.id, this.selectedIncoming);
+        this.importMessage = result.message;
+        this.selectedIncoming = '';
+        await this.load();
+      } catch (e) {
+        this.importError = e.message;
+      } finally {
+        this.importing = false;
       }
     },
     onFileSelect(e) {

@@ -66,6 +66,19 @@ router.get('/', async (req, res) => {
   }
 });
 
+// List folders sitting in static-sites-incoming/, awaiting import. Not
+// site-scoped — it's a shared staging area — so this must stay ahead of
+// GET /:id or Express would try to look up a site named "incoming".
+router.get('/incoming', async (req, res) => {
+  try {
+    const folders = await siteRuntime.listIncoming();
+    res.json(folders);
+  } catch (err) {
+    logger.error('Failed to list incoming static site folders', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get single site
 router.get('/:id', async (req, res) => {
   try {
@@ -267,6 +280,32 @@ router.post('/:id/upload', upload.single('file'), async (req, res) => {
       try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
     }
     logger.error('Failed to upload static site', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Import a folder already sitting in static-sites-incoming/ (rsync'd/scp'd
+// onto the host ahead of time) and deploy it. This is the large-site
+// counterpart to /:id/upload — same destination, no HTTP transfer involved.
+// Upload-mode sites only, same as /:id/upload.
+router.post('/:id/import', async (req, res) => {
+  try {
+    const site = await StaticSites.findById(req.params.id);
+    if (!site) return res.status(404).json({ error: 'Static site not found' });
+    if (site.source_type === 'git') {
+      return res.status(409).json({ error: 'This site is git-backed — use POST /:id/deploy-from-git instead' });
+    }
+    const { path: folderName } = req.body;
+    if (!folderName) return res.status(400).json({ error: 'path is required' });
+
+    await siteRuntime.importFromIncoming(site, folderName, (msg) => logger.info(`[static #${site.id}] ${msg}`));
+    await siteRuntime.startContainer(site);
+    await StaticSites.update(site.id, { name: site.name }); // touch updated_at
+
+    logger.info(`Static site imported: ${site.name} (${site.domain}) from static-sites-incoming/${folderName}`);
+    res.json({ message: `Site deployed to ${site.domain}` });
+  } catch (err) {
+    logger.error('Failed to import static site', err);
     res.status(500).json({ error: err.message });
   }
 });

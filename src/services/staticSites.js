@@ -12,11 +12,19 @@
  *                     a sandboxed builder container, build_output (subpath)
  *                     synced into the web root, then container restarted.
  *
+ * A third path (still an upload-mode site — no new source_type) exists for
+ * sites too large to push through the browser: dropping a folder directly
+ * onto the Beachhead host under static-sites-incoming/ (e.g. via rsync/scp
+ * ahead of time) and then importing it from the dashboard. See "Local
+ * import" below.
+ *
  * Layout under config.deploy.baseDir:
  *
  *   static-sites/site-<id>/public/        ← what nginx serves (bind-mounted)
  *   static-sites-git/site-<id>/work/      ← clone + build dir (git mode only)
  *   static-sites-git/site-<id>/log        ← last deploy log (tail mirrored to db)
+ *   static-sites-incoming/<folder>/       ← files rsync'd/scp'd onto the host
+ *                                            ahead of time, awaiting import
  *
  * The container is plain nginx:alpine on the shared beachhead-net, the same
  * shape as the original uploads-only flow. nginx-proxy + acme-companion pick
@@ -35,6 +43,7 @@ const logger = require('../logger');
 
 const STATIC_BASE = path.join(config.deploy.baseDir, 'static-sites');
 const GIT_BASE = path.join(config.deploy.baseDir, 'static-sites-git');
+const INCOMING_BASE = path.join(config.deploy.baseDir, 'static-sites-incoming');
 
 function siteDir(siteId) {
   return path.join(STATIC_BASE, `site-${siteId}`);
@@ -133,6 +142,22 @@ async function runBuild(site, workDir, logSink) {
 }
 
 /**
+ * Swap `staging` in as the new webRoot(siteId), replacing whatever is there.
+ * Shared by both the git publisher and the local-import flow below. Caller
+ * is responsible for having `staging` fully populated (and for cleaning it
+ * up on failure) before calling this — the rename itself is the only part
+ * that needs to be atomic, since it's the moment nginx's bind-mounted view
+ * of the directory actually changes.
+ */
+function swapStagingIntoWebRoot(siteId, staging) {
+  const target = webRoot(siteId);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
+  fs.renameSync(staging, target);
+  return target;
+}
+
+/**
  * Atomically replace the contents of webRoot(site.id) with `<workDir>/<subpath>`.
  *
  * Strategy: copy into a sibling directory, swap by rename. This avoids serving
@@ -171,10 +196,116 @@ function publish(site, workDir, logSink) {
     filter: (src) => !src.split(path.sep).includes('.git'),
   });
 
-  // Swap. rmSync the old, rename staging to target.
-  if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
-  fs.renameSync(staging, target);
+  swapStagingIntoWebRoot(site.id, staging);
   logSink(`Published ${entries.length} top-level entr${entries.length === 1 ? 'y' : 'ies'} from ${subpath} → ${target}`);
+}
+
+// ── Local import (large-site path) ─────────────────────────────────────────
+//
+// Beachhead's own container has DEPLOY_BASE_DIR bind-mounted at the *same*
+// path as it lives on the host (see docker-compose.yml) — that's what makes
+// paths under it usable both by Node's fs calls here AND by the `docker run
+// -v <path>:...` commands above, which are interpreted by the HOST docker
+// daemon (Beachhead talks to it over the host's docker.sock). A path typed
+// into the dashboard that lives outside DEPLOY_BASE_DIR would not have that
+// property — Beachhead's own process couldn't see it to validate or import
+// it even though a bind mount to it might work by accident. So rather than
+// accept an arbitrary filesystem path from the browser, static-sites-incoming/
+// is a fixed, pre-mounted staging root: rsync/scp your build there directly
+// on the host ahead of time (bypassing HTTP entirely — no upload size limit,
+// no browser tab that has to stay open, resumable with rsync), then import
+// a named subfolder of it from the dashboard.
+
+function ensureIncomingBase() {
+  fs.mkdirSync(INCOMING_BASE, { recursive: true });
+  return INCOMING_BASE;
+}
+
+/**
+ * Resolve a folder name the dashboard sent against INCOMING_BASE, refusing
+ * anything that would escape it (../, absolute paths, symlink shenanigans).
+ */
+function resolveIncomingPath(name) {
+  if (!name || typeof name !== 'string') {
+    throw new Error('path is required');
+  }
+  const base = ensureIncomingBase();
+  const resolved = path.resolve(base, name);
+  const relative = path.relative(base, resolved);
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('path must be a folder directly under static-sites-incoming/');
+  }
+  return resolved;
+}
+
+/**
+ * List top-level folders sitting in static-sites-incoming/, with size and
+ * mtime, so the dashboard can offer a picker instead of a free-text path.
+ * `du -sb` is used for size (fast, single syscall-ish walk on most kernels)
+ * rather than a JS recursive walk, since these directories can be huge.
+ */
+async function listIncoming() {
+  const base = ensureIncomingBase();
+  const names = fs.readdirSync(base, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name);
+
+  const results = [];
+  for (const name of names) {
+    const dir = path.join(base, name);
+    const stat = fs.statSync(dir);
+    let sizeBytes = null;
+    try {
+      const { stdout } = await exec('du', ['-sb', dir], { timeout: 60000, silent: true });
+      sizeBytes = parseInt(stdout.split('\t')[0], 10) || null;
+    } catch {
+      /* du missing or timed out — size is just cosmetic, skip it */
+    }
+    results.push({ name, sizeBytes, mtime: stat.mtime });
+  }
+  results.sort((a, b) => b.mtime - a.mtime);
+  return results;
+}
+
+/**
+ * Import an already-transferred folder from static-sites-incoming/ into the
+ * site's web root and restart the container. Uses rename (not copy) so a
+ * 20GB folder swaps in instantly instead of being re-copied byte for byte —
+ * safe because INCOMING_BASE and STATIC_BASE are both under the same
+ * DEPLOY_BASE_DIR mount. Falls back to copy+delete only if that assumption
+ * is ever violated (e.g. DEPLOY_BASE_DIR reconfigured to span mounts).
+ *
+ * The source folder is consumed by the move — that's intentional, it keeps
+ * static-sites-incoming/ from silently accumulating old copies of every site
+ * ever imported.
+ */
+async function importFromIncoming(site, name, logSink = () => {}) {
+  const sourceDir = resolveIncomingPath(name);
+  if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
+    throw new Error(`'${name}' was not found under static-sites-incoming/`);
+  }
+
+  const entries = fs.readdirSync(sourceDir);
+  if (entries.length === 0) {
+    logSink(`Warning: ${name} is empty — site will serve nothing.`);
+  }
+
+  const target = webRoot(site.id);
+  const staging = `${target}.new`;
+  if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(staging), { recursive: true });
+
+  try {
+    fs.renameSync(sourceDir, staging);
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err;
+    logSink('Rename crossed a filesystem boundary — falling back to copy (slower for large sites).');
+    fs.cpSync(sourceDir, staging, { recursive: true, dereference: false, errorOnExist: false });
+    fs.rmSync(sourceDir, { recursive: true, force: true });
+  }
+
+  swapStagingIntoWebRoot(site.id, staging);
+  logSink(`Imported ${entries.length} top-level entr${entries.length === 1 ? 'y' : 'ies'} from static-sites-incoming/${name} → ${target}`);
 }
 
 /**
@@ -302,6 +433,7 @@ async function startupEnsureRunning() {
 module.exports = {
   // paths (exposed so routes can write upload contents)
   STATIC_BASE,
+  INCOMING_BASE,
   siteDir,
   webRoot,
   containerName,
@@ -310,6 +442,9 @@ module.exports = {
   stopContainer,
   // git-mode
   deployFromGit,
+  // local import (large-site path)
+  listIncoming,
+  importFromIncoming,
   // recovery
   startupEnsureRunning,
 };
