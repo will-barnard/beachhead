@@ -7,6 +7,7 @@ const Deployments = require('../models/deployments');
 const Settings = require('../models/settings');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
 const { exec, dockerComposeDown, stopComposeProject } = require('../services/docker');
+const selfUpdate = require('../services/selfUpdate');
 const config = require('../config');
 const logger = require('../logger');
 
@@ -343,4 +344,42 @@ router.post('/apps/:id/prune', async (req, res) => {
   }
 });
 
+// ── Self-update ──
+
+/**
+ * GET /api/system/update
+ * Current status of the self-update sidecar (never_run | running | success |
+ * failed) plus its recent log output. Safe to poll continuously — including
+ * right after POSTing an update, while beachhead-api itself may be mid-restart
+ * (the request will just fail to connect until the new container is up).
+ */
+router.get('/update', async (req, res) => {
+  try {
+    const status = await selfUpdate.getStatus();
+    res.json(status);
+  } catch (err) {
+    logger.error('Failed to read self-update status', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/system/update
+ * Starts ./update.sh (git pull + rebuild + restart) for Beachhead's own
+ * stack in a sibling container, and returns immediately — it does not wait
+ * for the update to finish, since this container itself will be recreated
+ * partway through. Poll GET /api/system/update for progress.
+ */
+router.post('/update', async (req, res) => {
+  try {
+    const result = await selfUpdate.startUpdate();
+    logger.info('Self-update triggered from dashboard');
+    res.json(result);
+  } catch (err) {
+    logger.error('Failed to start self-update', err);
+    res.status(409).json({ error: err.message });
+  }
+});
+
 module.exports = router;
+

@@ -125,6 +125,10 @@ export default {
   listIncomingStaticSites: () => request('/static-sites/incoming'),
   importStaticSite: (id, folderName) => request(`/static-sites/${id}/import`, { method: 'POST', body: { path: folderName } }),
 
+  // Self-update (rebuilds/restarts Beachhead itself)
+  getSelfUpdateStatus: () => request('/system/update'),
+  startSelfUpdate: () => request('/system/update', { method: 'POST', body: {} }),
+
   // System
   getContainers: () => request('/system/containers'),
   stopContainer: (id) => request(`/system/containers/${id}/stop`, { method: 'POST', body: {} }),

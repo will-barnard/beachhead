@@ -49,6 +49,16 @@ const config = {
     // duplicates acme-companion may add during its own hourly loop.
     challengeReconcileMs: parseInt(process.env.CHALLENGE_RECONCILE_MS, 10) || 120000,
   },
+
+  // Self-update — rebuilds/restarts Beachhead itself (see services/selfUpdate.js).
+  // containerName must match docker-compose.yml's `container_name: beachhead-api`
+  // for this container so the repo directory can be discovered from its
+  // Compose-assigned label rather than requiring a separate env var.
+  selfUpdate: {
+    containerName: process.env.BEACHHEAD_CONTAINER_NAME || 'beachhead-api',
+    updaterContainerName: process.env.SELF_UPDATER_CONTAINER || 'beachhead-self-updater',
+    updaterImage: process.env.SELF_UPDATER_IMAGE || 'alpine:3.20',
+  },
 };
 
 module.exports = config;

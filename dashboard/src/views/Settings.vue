@@ -59,6 +59,33 @@
       <button class="btn btn-danger" @click="logout">Sign Out</button>
     </div>
 
+    <!-- Self-update -->
+    <div class="card" style="margin-top: 2rem;">
+      <h3 style="margin-bottom: 0.5rem;">Update Beachhead</h3>
+      <p style="color: var(--muted); font-size: 0.85rem; margin: 0 0 1rem;">
+        Pulls the latest code, rebuilds, and restarts Beachhead itself — the same as SSHing in and running
+        <code>./update.sh</code>. This dashboard and every app behind it will be briefly unreachable while it swaps in.
+      </p>
+
+      <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.75rem;">
+        <span :class="['badge', updateBadgeClass]" style="font-size: 0.7rem;">{{ updateBadgeText }}</span>
+        <span v-if="updateStatus && updateStatus.finishedAt && updateStatus.status !== 'running'" style="color: var(--muted); font-size: 0.78rem;">
+          {{ new Date(updateStatus.finishedAt).toLocaleString() }}
+        </span>
+        <button class="btn btn-sm" style="margin-left: auto;" @click="triggerUpdate" :disabled="updateStarting || (updateStatus && updateStatus.status === 'running')">
+          {{ updateStarting ? 'Starting…' : (updateStatus && updateStatus.status === 'running' ? 'Updating…' : 'Update Beachhead') }}
+        </button>
+        <button v-if="updateStatus && updateStatus.status === 'success'" class="btn btn-sm" @click="reloadPage">
+          Reload Dashboard
+        </button>
+      </div>
+
+      <p v-if="updateError" style="color: var(--danger); font-size: 0.82rem; margin: 0 0 0.75rem;">{{ updateError }}</p>
+
+      <pre v-if="updateStatus && updateStatus.log" ref="updateLog"
+           style="max-height: 260px; overflow: auto; font-size: 0.75rem;">{{ updateStatus.log }}</pre>
+    </div>
+
     <!-- Build Configuration -->
     <div class="card" style="margin-top: 2rem;">
       <h3 style="margin-bottom: 1rem;">Build Configuration</h3>
@@ -451,6 +478,11 @@ export default {
     cleanupError: null,
     cleanupSuccess: null,
     cleanupSummary: null,
+    updateStatus: null,
+    updateStarting: false,
+    updateError: null,
+    updatePolling: false,
+    updatePollTimer: null,
   }),
   async mounted() {
     await this.loadUsers();
@@ -459,12 +491,32 @@ export default {
     await this.loadStagingSettings();
     await this.loadConstructionSettings();
     await this.loadLanSettings();
+    await this.loadUpdateStatus();
     try {
       const status = await api.getBootstrapStatus();
       if (status.user) this.currentUserId = status.user.id;
     } catch {
       // ignore
     }
+  },
+  beforeUnmount() {
+    clearTimeout(this.updatePollTimer);
+  },
+  computed: {
+    updateBadgeClass() {
+      const s = this.updateStatus && this.updateStatus.status;
+      if (s === 'running') return 'badge-info';
+      if (s === 'success') return 'badge-success';
+      if (s === 'failed') return 'badge-danger';
+      return 'badge-warning';
+    },
+    updateBadgeText() {
+      const s = this.updateStatus && this.updateStatus.status;
+      if (s === 'running') return 'Updating…';
+      if (s === 'success') return 'Up to date';
+      if (s === 'failed') return `Failed (exit ${this.updateStatus.exitCode})`;
+      return 'Not run yet';
+    },
   },
   methods: {
     async loadUsers() {
@@ -685,6 +737,54 @@ export default {
       } finally {
         this.runningCleanup = false;
       }
+    },
+    async loadUpdateStatus() {
+      try {
+        const status = await api.getSelfUpdateStatus();
+        this.updateStatus = status;
+        this.updateError = null;
+        if (status.status === 'running') {
+          this.schedulePoll(3000);
+        } else {
+          this.updatePolling = false;
+        }
+      } catch (e) {
+        if (this.updatePolling) {
+          // Expected during the restart window — beachhead-api itself may be
+          // rebuilding right now. Keep trying instead of showing an error.
+          this.schedulePoll(2000);
+        } else {
+          this.updateError = e.message;
+        }
+      } finally {
+        this.$nextTick(this.scrollUpdateLog);
+      }
+    },
+    schedulePoll(delay) {
+      this.updatePolling = true;
+      clearTimeout(this.updatePollTimer);
+      this.updatePollTimer = setTimeout(() => this.loadUpdateStatus(), delay);
+    },
+    scrollUpdateLog() {
+      const el = this.$refs.updateLog;
+      if (el) el.scrollTop = el.scrollHeight;
+    },
+    async triggerUpdate() {
+      if (!confirm('This pulls the latest code, rebuilds, and restarts Beachhead — including this dashboard and every app behind it, briefly. Continue?')) return;
+      this.updateError = null;
+      this.updateStarting = true;
+      try {
+        await api.startSelfUpdate();
+        this.updateStatus = { status: 'running', log: '' };
+        this.schedulePoll(1500);
+      } catch (e) {
+        this.updateError = e.message;
+      } finally {
+        this.updateStarting = false;
+      }
+    },
+    reloadPage() {
+      window.location.reload();
     },
   },
 };
