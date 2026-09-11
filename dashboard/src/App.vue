@@ -6,6 +6,7 @@
         <div v-if="authenticated" style="display: flex; gap: 0.5rem;">
           <router-link to="/system" class="btn">📦 System</router-link>
           <router-link to="/certificates" class="btn">🔒 Certificates</router-link>
+          <router-link to="/reverse-proxy-targets" class="btn">↪ Reverse Proxy</router-link>
           <router-link to="/static-sites" class="btn">📄 Static Sites</router-link>
           <router-link to="/apps/new" class="btn">+ New App</router-link>
           <router-link to="/settings" class="btn" title="Settings" style="padding: 0.5rem 0.65rem;">⚙</router-link>

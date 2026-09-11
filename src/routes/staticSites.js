@@ -6,6 +6,7 @@ const { spawn } = require('child_process');
 const StaticSites = require('../models/staticSites');
 const Apps = require('../models/apps');
 const AppEndpoints = require('../models/appEndpoints');
+const ReverseProxyTargets = require('../models/reverseProxyTargets');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
 const siteRuntime = require('../services/staticSites');
 const logger = require('../logger');
@@ -49,6 +50,10 @@ async function assertDomainAvailable(domain, ignoreSiteId = null) {
   const existingSite = await StaticSites.findByDomain(domain);
   if (existingSite && existingSite.id !== ignoreSiteId) {
     return `Domain already used by static site "${existingSite.name}"`;
+  }
+  const existingTarget = await ReverseProxyTargets.findByDomain(domain);
+  if (existingTarget) {
+    return `Domain already used by reverse proxy target "${existingTarget.name || existingTarget.domains[0]}"`;
   }
   return null;
 }

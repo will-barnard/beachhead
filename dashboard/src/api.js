@@ -89,6 +89,15 @@ export default {
     URL.revokeObjectURL(url);
   },
 
+  // Reverse proxy targets (forward 80/443 for a domain to a non-Beachhead
+  // host:port, e.g. a NAS on the LAN)
+  getReverseProxyTargets: () => request('/reverse-proxy-targets'),
+  createReverseProxyTarget: (data) => request('/reverse-proxy-targets', { method: 'POST', body: data }),
+  updateReverseProxyTarget: (id, data) => request(`/reverse-proxy-targets/${id}`, { method: 'PUT', body: data }),
+  deleteReverseProxyTarget: (id) => request(`/reverse-proxy-targets/${id}`, { method: 'DELETE' }),
+  enableReverseProxyTarget: (id, enabled) => request(`/reverse-proxy-targets/${id}/enable`, { method: 'POST', body: { enabled } }),
+  restartReverseProxyTarget: (id) => request(`/reverse-proxy-targets/${id}/restart`, { method: 'POST', body: {} }),
+
   // Auth
   getBootstrapStatus: () => request('/bootstrap/status'),
   setupAdmin: (data) => request('/bootstrap/setup', { method: 'POST', body: data }),

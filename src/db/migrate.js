@@ -349,6 +349,43 @@ const MIGRATIONS = [
       ON CONFLICT DO NOTHING;
     `,
   },
+  {
+    // Reverse Proxy Targets — forward 80/443 traffic for a domain to an
+    // arbitrary host:port that Beachhead does NOT run (e.g. a NAS on the
+    // same LAN). Implemented as a lightweight nginx:alpine sidecar container
+    // on beachhead-net carrying VIRTUAL_HOST/LETSENCRYPT_HOST, so nginx-proxy
+    // and acme-companion pick it up exactly like any app or static site —
+    // TLS terminates at Beachhead, decrypted traffic is proxy_pass'd onward.
+    //
+    //   domains        — one or more hostnames routed to this target
+    //   target_scheme  — 'http' or 'https' — protocol Beachhead uses to
+    //                    reach the target
+    //   target_host    — LAN IP or hostname of the target (e.g. a NAS)
+    //   target_port    — port the target listens on
+    //   websocket      — add the Upgrade/Connection headers for WebSocket
+    //                    passthrough (e.g. file-manager or media-server UIs)
+    //   verify_tls     — when target_scheme='https', whether to verify the
+    //                    target's certificate (off for a NAS's self-signed
+    //                    admin-UI cert)
+    //   enabled        — toggle without deleting the definition
+    name: '028_create_reverse_proxy_targets',
+    sql: `
+      CREATE TABLE IF NOT EXISTS reverse_proxy_targets (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        domains TEXT[] NOT NULL,
+        target_scheme TEXT NOT NULL DEFAULT 'http',
+        target_host TEXT NOT NULL,
+        target_port INTEGER NOT NULL,
+        websocket BOOLEAN DEFAULT false,
+        verify_tls BOOLEAN DEFAULT true,
+        enabled BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        CONSTRAINT reverse_proxy_targets_scheme_chk CHECK (target_scheme IN ('http', 'https'))
+      );
+    `,
+  },
 ];
 
 async function migrate() {

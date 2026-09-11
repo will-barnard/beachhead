@@ -8,6 +8,7 @@ const Deployments = require('../models/deployments');
 const EnvVars = require('../models/envVars');
 const Settings = require('../models/settings');
 const StaticSites = require('../models/staticSites');
+const ReverseProxyTargets = require('../models/reverseProxyTargets');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
 const { dockerComposeDown, dockerComposeRecreate, dockerComposeUpNoBuild, dockerComposeStop, dockerComposeUpStateful, stopComposeProject, ensureNetwork } = require('../services/docker');
 const { startPausePlaceholder, stopPausePlaceholder, stopAutoPausePlaceholders } = require('../services/pause');
@@ -96,6 +97,10 @@ router.post('/', async (req, res) => {
     if (existingEndpoint) {
       return res.status(409).json({ error: 'Domain already used by an app endpoint' });
     }
+    const existingTarget = await ReverseProxyTargets.findByDomain(domain);
+    if (existingTarget) {
+      return res.status(409).json({ error: 'Domain already used by a reverse proxy target' });
+    }
 
     const app = await Apps.create({
       name, repo_url: normalizedRepoUrl, domain, branch, public_service, public_port,
@@ -140,6 +145,10 @@ router.put('/:id', async (req, res) => {
       const existingEndpoint = await AppEndpoints.findByDomain(domain);
       if (existingEndpoint) {
         return res.status(409).json({ error: 'Domain already used by an app endpoint' });
+      }
+      const existingTarget = await ReverseProxyTargets.findByDomain(domain);
+      if (existingTarget) {
+        return res.status(409).json({ error: 'Domain already used by a reverse proxy target' });
       }
     }
 
@@ -1123,6 +1132,10 @@ router.post('/:id/endpoints', async (req, res) => {
     const existingStatic = await StaticSites.findByDomain(domain);
     if (existingStatic) {
       return res.status(409).json({ error: `Domain already used by static site "${existingStatic.name}"` });
+    }
+    const existingTarget = await ReverseProxyTargets.findByDomain(domain);
+    if (existingTarget) {
+      return res.status(409).json({ error: 'Domain already used by a reverse proxy target' });
     }
 
     const endpoint = await AppEndpoints.create({ app_id: app.id, service, domain, port });

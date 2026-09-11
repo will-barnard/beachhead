@@ -20,6 +20,7 @@ const staticSitesRouter = require('./routes/staticSites');
 const systemRouter = require('./routes/system');
 const certsRouter = require('./routes/certs');
 const jobsRouter = require('./routes/jobs');
+const reverseProxyTargetsRouter = require('./routes/reverseProxyTargets');
 const wakeRouter = require('./routes/wake');
 
 const app = express();
@@ -73,6 +74,7 @@ app.use('/api/static-sites', staticSitesRouter);
 app.use('/api/system', systemRouter);
 app.use('/api/certs', certsRouter);
 app.use('/api/jobs', jobsRouter);
+app.use('/api/reverse-proxy-targets', reverseProxyTargetsRouter);
 
 // Health endpoint
 app.get('/api/health', (req, res) => {
@@ -125,6 +127,16 @@ async function start() {
       await proxyNetwork.reconcileAll();
     } catch (err) {
       logger.error(`Proxy network reconcile failed: ${err.message}`);
+    }
+
+    // Reconcile reverse proxy targets (forward 80/443 for a domain to a
+    // non-Beachhead host:port, e.g. a NAS). Containers carry
+    // --restart unless-stopped so this mostly self-heals cases where Docker
+    // lost state; cheap, so it's fine to run on every boot.
+    try {
+      await require('./services/reverseProxyTargets').startupEnsureRunning();
+    } catch (err) {
+      logger.error(`Reverse proxy targets reconcile failed: ${err.message}`);
     }
 
     // Reconcile under-construction placeholders. They carry

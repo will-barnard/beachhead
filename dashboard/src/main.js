@@ -12,6 +12,7 @@ import StaticSiteDetail from './views/StaticSiteDetail.vue';
 import NewStaticSite from './views/NewStaticSite.vue';
 import Containers from './views/Containers.vue';
 import Certificates from './views/Certificates.vue';
+import ReverseProxyTargets from './views/ReverseProxyTargets.vue';
 
 const routes = [
   { path: '/', component: AppsList },
@@ -22,6 +23,7 @@ const routes = [
   { path: '/static-sites/:id', component: StaticSiteDetail },
   { path: '/system', component: Containers },
   { path: '/certificates', component: Certificates },
+  { path: '/reverse-proxy-targets', component: ReverseProxyTargets },
   { path: '/setup', component: ConfigureAuth },
   { path: '/login', component: Login },
   { path: '/settings', component: Settings },
