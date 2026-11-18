@@ -31,7 +31,10 @@ ok "Beachhead updated and running"
 # ── Wait for health ───────────────────────────
 
 # Read host-side API port from .env (defaults to 3000 for installs predating this setting)
-API_PORT="$(grep -m1 '^BEACHHEAD_API_PORT=' .env 2>/dev/null | cut -d'=' -f2)"
+# `|| true`: under `set -euo pipefail`, a .env without this line makes grep
+# exit 1, which would abort the whole script here — after the rebuild has
+# already succeeded — and report the update as failed.
+API_PORT="$(grep -m1 '^BEACHHEAD_API_PORT=' .env 2>/dev/null | cut -d'=' -f2 || true)"
 API_PORT="${API_PORT:-3000}"
 
 # The dashboard's self-updater runs this inside a sidecar container and
