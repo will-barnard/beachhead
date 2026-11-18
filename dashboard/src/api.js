@@ -138,6 +138,17 @@ export default {
   getNetworkInfo: () => request('/system/network-info'),
   dockerCleanup: (body = {}) => request('/system/docker-cleanup', { method: 'POST', body }),
 
+  // System monitor (Health page)
+  getMonitorHealth: () => request('/system/monitor/health'),
+  getMonitorSnapshot: () => request('/system/monitor/snapshot'),
+  getMonitorMetrics: (kind, subject, range) => request(`/system/monitor/metrics?kind=${encodeURIComponent(kind)}&subject=${encodeURIComponent(subject)}&range=${encodeURIComponent(range)}`),
+  getMonitorAlerts: (status = 'all', limit = 100) => request(`/system/monitor/alerts?status=${status}&limit=${limit}`),
+  resolveMonitorAlert: (id) => request(`/system/monitor/alerts/${id}/resolve`, { method: 'POST', body: {} }),
+  runMonitor: () => request('/system/monitor/run', { method: 'POST', body: {} }),
+  getMonitorConfig: () => request('/system/monitor/config'),
+  updateMonitorConfig: (data) => request('/system/monitor/config', { method: 'PUT', body: data }),
+  testMonitorEmail: () => request('/system/monitor/test-email', { method: 'POST', body: {} }),
+
   async uploadStaticSite(id, file) {
     const formData = new FormData();
     formData.append('file', file);

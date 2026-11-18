@@ -22,7 +22,7 @@ const logger = require('../logger');
  * stagingHost: optional fully-qualified hostname (e.g. "acme.dev.example.com")
  * that the public service should also respond to. Gets its own LE cert.
  */
-function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides, stagingHost, stagingOnly, proxyNetwork, staticPorts, lanBindIp, allServices, statefulServices }) {
+function generateOverride({ appSlug, deployId, publicService, domain, publicPort, envVars, namedVolumes, wwwRedirect, statefulNetwork, additionalEndpoints, imageOverrides, stagingHost, stagingOnly, proxyNetwork, staticPorts, lanBindIp, allServices, statefulServices, bhConfig }) {
   if (!publicService || !domain) {
     throw new Error('publicService and domain are required for compose override');
   }
@@ -254,7 +254,71 @@ function generateOverride({ appSlug, deployId, publicService, domain, publicPort
     }
   }
 
+  applyRuntimeDefaults(override.services, bhConfig, statefulServices);
+
   return yaml.dump(override, { lineWidth: -1 });
+}
+
+/**
+ * Log rotation and optional resource limits, applied to every service
+ * Beachhead writes into an override.
+ *
+ * LOGGING: Docker's default json-file driver never rotates, so a chatty
+ * container slowly fills the disk (on Docker Desktop, the VM disk image —
+ * which takes every other app down with it). Every service gets
+ * json-file with max-size/max-file unless beachhead.json sets
+ * `"logging": false` (e.g. an app shipping logs with its own driver).
+ *   "logging": { "max_size": "20m", "max_file": 5 }   — custom limits
+ *
+ * RESOURCES: opt-in per app in beachhead.json. Without a limit one runaway
+ * container can take the whole host's memory; with one, Docker OOM-kills
+ * just that container and the monitor reports it.
+ *   "resources": {
+ *     "default": { "memory": "512m" },              — every service
+ *     "backend": { "memory": "1g", "cpus": 1.5 }    — per service, wins
+ *   }
+ *
+ * `services` is the override's services map (mutated). Stateful services
+ * are skipped here only when the caller is building the per-deploy
+ * override — generateStatefulOverride applies the same defaults to them.
+ */
+const DEFAULT_LOG_MAX_SIZE = '10m';
+const DEFAULT_LOG_MAX_FILE = 3;
+const SIZE_RE = /^\d+(\.\d+)?[kmg]?b?$/i;
+
+function applyRuntimeDefaults(services, bhConfig, skipServices = []) {
+  if (!services) return;
+  const skip = new Set(Array.isArray(skipServices) ? skipServices : []);
+  const logging = loggingFor(bhConfig);
+  const resources = bhConfig && typeof bhConfig.resources === 'object' && bhConfig.resources ? bhConfig.resources : null;
+
+  for (const [name, svc] of Object.entries(services)) {
+    if (skip.has(name)) continue;
+    if (logging && !svc.logging) svc.logging = logging;
+    const r = resourcesFor(resources, name);
+    if (r.memory) svc.mem_limit = r.memory;
+    if (r.cpus) svc.cpus = r.cpus;
+  }
+}
+
+function loggingFor(bhConfig) {
+  const cfg = bhConfig?.logging;
+  if (cfg === false) return null;
+  const maxSize = typeof cfg?.max_size === 'string' && SIZE_RE.test(cfg.max_size) ? cfg.max_size : DEFAULT_LOG_MAX_SIZE;
+  const maxFile = Number.isInteger(cfg?.max_file) && cfg.max_file > 0 ? cfg.max_file : DEFAULT_LOG_MAX_FILE;
+  // Compose wants option values as strings.
+  return { driver: 'json-file', options: { 'max-size': maxSize, 'max-file': String(maxFile) } };
+}
+
+function resourcesFor(resources, service) {
+  if (!resources) return {};
+  const merged = { ...(resources.default || {}), ...(resources[service] || {}) };
+  const out = {};
+  if (typeof merged.memory === 'string' && SIZE_RE.test(merged.memory)) out.memory = merged.memory.toLowerCase();
+  else if (merged.memory != null) logger.warn(`beachhead.json resources.${service}.memory "${merged.memory}" ignored — use a size like "512m"`);
+  const cpus = Number(merged.cpus);
+  if (merged.cpus != null && Number.isFinite(cpus) && cpus > 0) out.cpus = cpus;
+  return out;
 }
 
 /**
@@ -338,7 +402,7 @@ function readServiceVolumes(deployDir, serviceNames) {
  * stateful services so they join the same Docker network as the transient services
  * in the per-deploy project, and so Docker Compose doesn't fight over volume ownership.
  */
-function generateStatefulOverride(statefulNetwork, namedVolumes = []) {
+function generateStatefulOverride(statefulNetwork, namedVolumes = [], { services = [], bhConfig = null } = {}) {
   const doc = {
     networks: {
       internal: {
@@ -347,6 +411,14 @@ function generateStatefulOverride(statefulNetwork, namedVolumes = []) {
       },
     },
   };
+
+  // Same log rotation / limits as transient services — a database is
+  // usually the longest-lived container on the box, so it matters most here.
+  if (services.length > 0) {
+    doc.services = {};
+    for (const svc of services) doc.services[svc] = {};
+    applyRuntimeDefaults(doc.services, bhConfig);
+  }
 
   if (namedVolumes.length > 0) {
     doc.volumes = {};
@@ -493,6 +565,7 @@ function stripHostPorts(deployDir) {
 }
 
 module.exports = {
+  applyRuntimeDefaults,
   generateOverride,
   writeOverrideFile,
   readBeachheadConfig,

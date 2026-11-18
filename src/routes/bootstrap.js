@@ -206,6 +206,7 @@ router.get('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
     if (settings.registry_password) settings.registry_password = '••••••••';
     if (settings.ghcr_token) settings.ghcr_token = '••••••••';
     if (settings.git_https_token) settings.git_https_token = '••••••••';
+    if (settings.resend_api_key) settings.resend_api_key = '••••••••';
     res.json(settings);
   } catch (err) {
     logger.error('Failed to get settings', err);
@@ -313,6 +314,7 @@ router.put('/settings', requireAuth, requireSuperAdmin, async (req, res) => {
     if (settings.registry_password) settings.registry_password = '••••••••';
     if (settings.ghcr_token) settings.ghcr_token = '••••••••';
     if (settings.git_https_token) settings.git_https_token = '••••••••';
+    if (settings.resend_api_key) settings.resend_api_key = '••••••••';
     res.json(settings);
   } catch (err) {
     logger.error(`Settings update failed: ${err.message}`);

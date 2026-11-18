@@ -110,6 +110,42 @@ Push to the configured branch. Beachhead receives the webhook, creates a deploym
 | `POST` | `/api/apps/:id/env` | Set env var |
 | `DELETE` | `/api/apps/:appId/env/:envId` | Delete env var |
 | `POST` | `/api/webhooks/github` | GitHub webhook receiver |
+| `GET` | `/api/system/monitor/health` | Instance health summary (stable shape — what Cabana polls) |
+| `GET` | `/api/system/monitor/snapshot` | Everything the collector last saw |
+| `GET` | `/api/system/monitor/metrics?kind=&subject=&range=` | Time series (`host`, `disk`, `container`; `1h`–`30d`) |
+| `GET` | `/api/system/monitor/alerts?status=open` | Open / resolved alerts |
+| `POST` | `/api/system/monitor/alerts/:id/resolve` | Dismiss an alert |
+| `GET`/`PUT` | `/api/system/monitor/config` | Thresholds, alert email, heartbeat |
+| `POST` | `/api/system/monitor/test-email` | Send a test alert email |
+
+## System Monitor
+
+Beachhead samples itself every minute and alerts by email (Resend) when something
+needs attention. Dashboard → **Health**.
+
+**What it watches**
+
+| Area | Checks |
+|------|--------|
+| Host / VM | Memory, swap, CPU, load per core |
+| Disk | Docker storage and the deploy directory: % used, plus a "full in N days" projection from the last 24h |
+| Containers | CPU, memory (vs. its limit, or vs. the host when unlimited), steady memory climb toward the ceiling, failing healthchecks |
+| Events | OOM kills; crash loops (3+ unexpected exits in 10 min) |
+| Apps | A service of the active deployment not running; HTTPS probe through nginx-proxy every 2 min (5xx / no response = down) |
+| Beachhead | Core containers down, deploys stuck > 20 min, latest deploy failed, certificates < 14 days from expiry (renewal is failing) |
+
+On macOS "host" means Docker Desktop's VM — its memory and disk-image size are the
+ceiling containers actually hit. Paused and auto-paused apps are skipped, and probe
+traffic is excluded from the on-demand activity log.
+
+Alerts open after the condition holds for a few minutes, resolve with a small margin
+so they don't flap, and are batched into one email per 30 seconds (max 12/hour).
+Samples are kept 48h raw and 30 days as 15-minute averages.
+
+**Setup:** Health → Alert settings → Resend API key, a verified sender, recipients →
+*Send test*. Optionally add a heartbeat URL (e.g. healthchecks.io): Beachhead pings
+it every minute, so if the whole machine goes down, that service emails you.
+
 
 ## Deployment State Machine
 
@@ -190,3 +226,6 @@ The dashboard dev server proxies `/api` requests to `localhost:3000`.
 | `DOCKER_NETWORK` | Docker network name | `beachhead-net` |
 | `HEALTH_CHECK_TIMEOUT` | Health check timeout (ms) | `30000` |
 | `HEALTH_CHECK_INTERVAL` | Health check retry interval (ms) | `2000` |
+| `RESEND_API_KEY` | Fallback for the alert email API key (dashboard setting wins) | — |
+| `ALERT_EMAIL_TO` | Fallback alert recipients, comma-separated | — |
+| `ALERT_EMAIL_FROM` | Fallback alert sender (must be verified in Resend) | — |

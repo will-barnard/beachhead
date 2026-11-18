@@ -13,6 +13,9 @@ import NewStaticSite from './views/NewStaticSite.vue';
 import Containers from './views/Containers.vue';
 import Certificates from './views/Certificates.vue';
 import ReverseProxyTargets from './views/ReverseProxyTargets.vue';
+// Lazy: the Health page polls and draws charts; no reason to ship it in the
+// main bundle for every other page.
+const Monitor = () => import('./views/Monitor.vue');
 
 const routes = [
   { path: '/', component: AppsList },
@@ -22,6 +25,7 @@ const routes = [
   { path: '/static-sites/new', component: NewStaticSite },
   { path: '/static-sites/:id', component: StaticSiteDetail },
   { path: '/system', component: Containers },
+  { path: '/monitor', component: Monitor },
   { path: '/certificates', component: Certificates },
   { path: '/reverse-proxy-targets', component: ReverseProxyTargets },
   { path: '/setup', component: ConfigureAuth },

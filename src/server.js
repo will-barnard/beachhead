@@ -9,6 +9,7 @@ const { migrate } = require('./db/migrate');
 const worker = require('./services/worker');
 const proxyNetwork = require('./services/proxyNetwork');
 const activityTracker = require('./services/activityTracker');
+const monitor = require('./services/monitor');
 
 // Routes
 const appsRouter = require('./routes/apps');
@@ -22,6 +23,7 @@ const certsRouter = require('./routes/certs');
 const jobsRouter = require('./routes/jobs');
 const reverseProxyTargetsRouter = require('./routes/reverseProxyTargets');
 const wakeRouter = require('./routes/wake');
+const monitorRouter = require('./routes/monitor');
 
 const app = express();
 
@@ -71,6 +73,9 @@ app.use('/api/apps', envVarsRouter);
 app.use('/api/apps', envFilesRouter);
 app.use('/api/bootstrap', bootstrapRouter);
 app.use('/api/static-sites', staticSitesRouter);
+// More specific prefix first so /api/system/monitor/* is handled by its own
+// router rather than relying on the system router having no catch-all.
+app.use('/api/system/monitor', monitorRouter);
 app.use('/api/system', systemRouter);
 app.use('/api/certs', certsRouter);
 app.use('/api/jobs', jobsRouter);
@@ -182,6 +187,10 @@ async function start() {
     // Start deployment worker
     worker.start();
 
+    // System monitor — host/disk/container sampling, alerting, email. Never
+    // blocks startup: a monitor problem must not take deploys down with it.
+    monitor.start().catch((err) => logger.error(`System monitor failed to start: ${err.message}`));
+
     // Start HTTP server
     app.listen(config.port, () => {
       logger.info(`Beachhead server running on port ${config.port}`);
@@ -198,6 +207,7 @@ process.on('SIGTERM', () => {
   logger.info('SIGTERM received, shutting down');
   worker.stop();
   try { activityTracker.stop(); } catch {}
+  try { monitor.stop(); } catch {}
   process.exit(0);
 });
 
@@ -205,6 +215,7 @@ process.on('SIGINT', () => {
   logger.info('SIGINT received, shutting down');
   worker.stop();
   try { activityTracker.stop(); } catch {}
+  try { monitor.stop(); } catch {}
   process.exit(0);
 });
 

@@ -4,6 +4,10 @@
       <nav>
         <router-link to="/" class="logo">⚓ Beachhead</router-link>
         <div v-if="authenticated" style="display: flex; gap: 0.5rem;">
+          <router-link to="/monitor" class="btn" :title="healthTitle" style="position:relative;">
+            📈 Health
+            <span v-if="healthDot" class="health-dot" :style="{ background: healthDot }"></span>
+          </router-link>
           <router-link to="/system" class="btn">📦 System</router-link>
           <router-link to="/certificates" class="btn">🔒 Certificates</router-link>
           <router-link to="/reverse-proxy-targets" class="btn">↪ Reverse Proxy</router-link>
@@ -25,7 +29,24 @@ import api from './api.js';
 export default {
   data: () => ({
     authenticated: false,
+    health: null,
+    healthTimer: null,
   }),
+  computed: {
+    // Nav dot: red for critical, amber for warnings/stale data, none when healthy.
+    healthDot() {
+      const s = this.health?.status;
+      if (s === 'critical') return 'var(--danger)';
+      if (s === 'degraded' || s === 'unknown') return 'var(--warning)';
+      return null;
+    },
+    healthTitle() {
+      const h = this.health;
+      if (!h) return 'System health';
+      const n = h.alerts.critical + h.alerts.warning;
+      return n ? `${h.alerts.critical} critical, ${h.alerts.warning} warning` : 'All checks passing';
+    },
+  },
   async mounted() {
     try {
       const status = await api.getBootstrapStatus();
@@ -38,6 +59,7 @@ export default {
       }
       if (status.user) {
         this.authenticated = true;
+        this.pollHealth();
       } else {
         // Not logged in — redirect to login
         if (this.$route.path !== '/login') {
@@ -54,7 +76,17 @@ export default {
       this.checkAuth();
     },
   },
+  beforeUnmount() { clearInterval(this.healthTimer); },
   methods: {
+    pollHealth() {
+      if (this.healthTimer) return;
+      const load = async () => {
+        if (!this.authenticated) return;
+        try { this.health = await api.getMonitorHealth(); } catch { /* the Health page shows errors */ }
+      };
+      load();
+      this.healthTimer = setInterval(load, 60_000);
+    },
     async checkAuth() {
       try {
         const status = await api.getBootstrapStatus();
@@ -65,6 +97,7 @@ export default {
         }
         if (status.user) {
           this.authenticated = true;
+          this.pollHealth();
         } else {
           this.authenticated = false;
           if (this.$route.path !== '/login') this.$router.replace('/login');
@@ -164,6 +197,10 @@ a:hover { text-decoration: underline; }
 .badge-danger { background: rgba(248,113,113,0.15); color: var(--danger); }
 .badge-warning { background: rgba(251,191,36,0.15); color: var(--warning); }
 .badge-info { background: rgba(79,143,247,0.15); color: var(--accent); }
+.health-dot {
+  position: absolute; top: 4px; right: 4px; width: 8px; height: 8px;
+  border-radius: 50%; box-shadow: 0 0 0 2px var(--accent);
+}
 
 input, select, textarea {
   background: var(--bg);

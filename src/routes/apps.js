@@ -512,6 +512,7 @@ async function regenerateOverride(app, dep = null) {
     lanBindIp,
     allServices: readAllServiceNames(deployDir),
     statefulServices,
+    bhConfig,
   });
   writeOverrideFile(deployDir, overrideContent);
 

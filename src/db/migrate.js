@@ -386,6 +386,60 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    // System monitor (services/monitor/). See models/monitor.js for retention.
+    //   monitor_samples  — raw per-minute samples, pruned after 48h
+    //   monitor_rollups  — 15-minute avg/max buckets, pruned after 30d
+    //   monitor_alerts   — open + resolved alerts; the partial unique index
+    //                      guarantees one open row per key across restarts
+    // instance_id identifies this Beachhead to Cabana; generated once here so
+    // it survives reinstalls of the app container (it lives in pgdata).
+    name: '029_create_monitor',
+    sql: `
+      CREATE TABLE IF NOT EXISTS monitor_samples (
+        ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        kind TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        app_id INT,
+        service TEXT,
+        data JSONB NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_monitor_samples_subject_ts ON monitor_samples(kind, subject, ts);
+      CREATE INDEX IF NOT EXISTS idx_monitor_samples_ts ON monitor_samples(ts);
+
+      CREATE TABLE IF NOT EXISTS monitor_rollups (
+        bucket TIMESTAMPTZ NOT NULL,
+        kind TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        app_id INT,
+        service TEXT,
+        avg JSONB NOT NULL,
+        max JSONB NOT NULL,
+        PRIMARY KEY (bucket, kind, subject)
+      );
+
+      CREATE TABLE IF NOT EXISTS monitor_alerts (
+        id SERIAL PRIMARY KEY,
+        key TEXT NOT NULL,
+        rule TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        subject TEXT,
+        message TEXT NOT NULL,
+        details JSONB,
+        opened_at TIMESTAMPTZ DEFAULT NOW(),
+        last_seen_at TIMESTAMPTZ DEFAULT NOW(),
+        resolved_at TIMESTAMPTZ,
+        resolved_by TEXT,
+        notified_severity TEXT,
+        CONSTRAINT monitor_alerts_severity_chk CHECK (severity IN ('warning', 'critical'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_monitor_alerts_open_key ON monitor_alerts(key) WHERE resolved_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_monitor_alerts_opened ON monitor_alerts(opened_at DESC);
+
+      INSERT INTO settings (key, value) VALUES ('instance_id', gen_random_uuid()::text) ON CONFLICT DO NOTHING;
+      INSERT INTO settings (key, value) VALUES ('monitor_email_enabled', 'false') ON CONFLICT DO NOTHING;
+    `,
+  },
 ];
 
 async function migrate() {

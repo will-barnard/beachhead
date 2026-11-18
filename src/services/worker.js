@@ -236,6 +236,7 @@ async function processDeployment(deployment) {
       lanBindIp,
       allServices: readAllServiceNames(deployDir),
       statefulServices,
+      bhConfig,
     });
     writeOverrideFile(deployDir, overrideContent);
 
@@ -364,6 +365,7 @@ async function processDeployment(deployment) {
           lanBindIp,
           allServices: readAllServiceNames(deployDir),
           statefulServices,
+          bhConfig,
         });
         writeOverrideFile(deployDir, updatedOverride);
         fs.chmodSync(path.join(deployDir, 'beachhead.override.yml'), 0o600);
@@ -385,7 +387,7 @@ async function processDeployment(deployment) {
       // Both the stateful project and the transient project apply this overlay so
       // every service (postgres, backend) is on the same Docker network.
       const statefulOverridePath = path.join(deployDir, 'beachhead.stateful.override.yml');
-      fs.writeFileSync(statefulOverridePath, generateStatefulOverride(statefulNetwork, namedVolumes), 'utf8');
+      fs.writeFileSync(statefulOverridePath, generateStatefulOverride(statefulNetwork, namedVolumes, { services: statefulServices, bhConfig }), 'utf8');
       fs.chmodSync(statefulOverridePath, 0o600);
 
       // On the first deployment after stateful_services is added, the database may
@@ -580,6 +582,7 @@ async function regenerateOverride({ app, deployment, deployDir, publicService, p
     lanBindIp,
     allServices: readAllServiceNames(deployDir),
     statefulServices,
+    bhConfig: bhCfg,
   });
   writeOverrideFile(deployDir, overrideContent);
   fs.chmodSync(path.join(deployDir, 'beachhead.override.yml'), 0o600);

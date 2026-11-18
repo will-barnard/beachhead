@@ -246,6 +246,36 @@ volumes:
 
 ---
 
+## Optional: logging, memory limits and monitoring
+
+Beachhead adds log rotation to every service (`json-file`, 10 MB × 3 files) so
+container logs can't fill the disk. Everything below is optional and goes in
+`beachhead.json`:
+
+```json
+{
+  "public_service": "frontend",
+  "public_port": 80,
+  "logging": { "max_size": "20m", "max_file": 5 },
+  "resources": {
+    "default": { "memory": "512m" },
+    "backend": { "memory": "1g", "cpus": 1.5 }
+  },
+  "monitor": { "ignore_services": ["migrate"] }
+}
+```
+
+- `logging` — custom rotation limits, or `false` to leave logging alone (only if
+  your compose file sets its own logging driver).
+- `resources` — per-service `mem_limit` / `cpus`. `default` applies to every
+  service (stateful ones included); a named service overrides it. Without a
+  limit, one runaway container can take the whole host's memory; with one,
+  only that container is OOM-killed and the Health page reports it.
+- `monitor.ignore_services` — services that are *meant* to exit (one-shot
+  migration jobs). Otherwise an exited container counts as the app being down.
+- `health_check` (existing key) is also the path the uptime probe requests
+  every two minutes. Any status under 500 counts as up.
+
 ## Common failure modes
 
 | Symptom | Cause | Fix |

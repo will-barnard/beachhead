@@ -34,6 +34,8 @@
               <th style="text-align:left; padding:0.375rem 0.5rem;">Image</th>
               <th style="text-align:left; padding:0.375rem 0.5rem;">Status</th>
               <th style="text-align:left; padding:0.375rem 0.5rem;">Project</th>
+              <th style="text-align:right; padding:0.375rem 0.5rem;">CPU</th>
+              <th style="text-align:right; padding:0.375rem 0.5rem;">Memory</th>
               <th style="text-align:right; padding:0.375rem 0.5rem;">Actions</th>
             </tr>
           </thead>
@@ -48,6 +50,8 @@
                 <span style="color:var(--muted); font-size:0.72rem; margin-left:0.25rem;">{{ c.status }}</span>
               </td>
               <td style="padding:0.375rem 0.5rem; color:var(--muted); font-size:0.78rem;">{{ c.project || '—' }}</td>
+              <td style="padding:0.375rem 0.5rem; text-align:right; font-size:0.78rem;">{{ cpuOf(c) }}</td>
+              <td style="padding:0.375rem 0.5rem; text-align:right; font-size:0.78rem;">{{ memOf(c) }}</td>
               <td style="padding:0.375rem 0.5rem; text-align:right;">
                 <button v-if="c.state === 'running'" class="btn btn-warning btn-sm" @click="stopContainer(c)" style="margin-right:0.25rem;">Stop</button>
                 <button class="btn btn-danger btn-sm" @click="removeContainer(c)">Remove</button>
@@ -71,6 +75,9 @@ export default {
     loading: true,
     error: null,
     pruning: false,
+    // Live CPU/memory from the monitor's last sample, keyed by container name.
+    // Best-effort: the table still works if the monitor isn't running.
+    statsByName: {},
   }),
   computed: {
     running() { return this.containers.filter(c => c.state === 'running').length; },
@@ -115,7 +122,12 @@ export default {
       this.loading = true;
       this.error = null;
       try {
-        this.containers = await api.getContainers();
+        const [containers, snap] = await Promise.all([
+          api.getContainers(),
+          api.getMonitorSnapshot().catch(() => null),
+        ]);
+        this.containers = containers;
+        this.statsByName = Object.fromEntries((snap?.detail?.containers || []).map((x) => [x.name, x.stats]));
       } catch (e) {
         this.error = e.message;
       } finally {
@@ -139,6 +151,17 @@ export default {
       if (state === 'running') return 'badge-success';
       if (state === 'exited' || state === 'dead') return 'badge-danger';
       return 'badge-warning';
+    },
+    cpuOf(c) {
+      const s = this.statsByName[c.name];
+      return s?.cpuPct == null ? '—' : `${s.cpuPct}%`;
+    },
+    memOf(c) {
+      const s = this.statsByName[c.name];
+      if (!s) return '—';
+      const mb = s.memBytes / 1024 / 1024;
+      const used = mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+      return s.memLimited ? `${used} (${s.memPct}%)` : used;
     },
     truncImage(img) {
       if (!img) return '—';

@@ -25,6 +25,10 @@ services:
       # Standalone (app-independent) certificate management
       - CERTS_DIR=/etc/nginx/certs
       - ACME_CONTAINER=beachhead-letsencrypt
+      # Alert email fallbacks — the dashboard's Health → Alert settings win.
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - ALERT_EMAIL_TO=${ALERT_EMAIL_TO:-}
+      - ALERT_EMAIL_FROM=${ALERT_EMAIL_FROM:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # Bind the deploy dir at the same path inside the container as on the
