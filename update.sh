@@ -34,9 +34,14 @@ ok "Beachhead updated and running"
 API_PORT="$(grep -m1 '^BEACHHEAD_API_PORT=' .env 2>/dev/null | cut -d'=' -f2)"
 API_PORT="${API_PORT:-3000}"
 
+# The dashboard's self-updater runs this inside a sidecar container and
+# passes BEACHHEAD_HEALTH_URL (the API by container name), since localhost
+# there isn't the host. Run by hand, it falls back to the host port.
+HEALTH_URL="${BEACHHEAD_HEALTH_URL:-http://localhost:${API_PORT}/api/health}"
+
 info "Waiting for API to become healthy..."
 RETRIES=30
-until curl -sf "http://localhost:${API_PORT}/api/health" &>/dev/null || [[ $RETRIES -eq 0 ]]; do
+until curl -sf "$HEALTH_URL" &>/dev/null || [[ $RETRIES -eq 0 ]]; do
   sleep 2
   RETRIES=$((RETRIES - 1))
 done

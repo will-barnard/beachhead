@@ -88,22 +88,50 @@ async function startUpdate() {
   } catch { /* fine if it never existed */ }
 
   // alpine ships neither git, bash, nor a docker client — install them fresh
-  // each run rather than maintaining a bespoke image. --network host so
-  // update.sh's own `curl localhost:$API_PORT/api/health` check (written
-  // assuming it runs directly on the host, same as when Will SSHes in and
-  // runs it by hand) resolves correctly.
+  // each run rather than maintaining a bespoke image.
+  //
+  // Platform notes (this has to behave the same on a Linux VM and on macOS
+  // Docker Desktop):
+  //
+  // - The sidecar runs as root, but on Linux the checkout is owned by the
+  //   user who installed Beachhead. git >= 2.35.2 refuses to touch a repo
+  //   owned by someone else ("detected dubious ownership"), so the repo is
+  //   marked safe for this one-off container's git config.
+  // - Anything git writes as root on Linux would leave root-owned files in
+  //   the checkout and break the next manual `git pull`. After update.sh
+  //   runs (pass or fail), root-owned files are handed back to whoever owns
+  //   the repo dir. Skipped when the repo dir itself reads as root-owned
+  //   (a root install, or Docker Desktop presenting the share that way).
+  //   The deployments dir and node_modules are pruned: app data under
+  //   deployments must keep whatever ownership its containers gave it.
+  // - The health check runs over beachhead-net against the API container
+  //   by name instead of `--network host` + localhost: on Docker Desktop
+  //   "host" is its Linux VM, not the Mac, so localhost missed the API.
+  //   beachhead-net is external, so it survives the `compose up` that
+  //   recreates beachhead-api.
+  const deployBaseDir = config.deploy.baseDir;
   const script = [
     'set -e',
     'echo "==> Installing update tooling (git, bash, docker CLI)..."',
-    'apk add --no-cache git bash docker-cli docker-cli-compose curl >/dev/null',
+    'apk add --no-cache git bash docker-cli docker-cli-compose curl findutils >/dev/null',
     `cd '${repoDir}'`,
-    'exec bash ./update.sh',
+    `git config --global --add safe.directory '${repoDir}'`,
+    'OWNER="$(stat -c %u:%g .)"',
+    'set +e',
+    'bash ./update.sh',
+    'RC=$?',
+    'if [ "${OWNER%%:*}" != "0" ]; then',
+    '  echo "==> Restoring file ownership to $OWNER..."',
+    `  find "$PWD" -xdev \\( -path "$PWD/deployments" -o -path '${deployBaseDir}' -o -name node_modules \\) -prune -o -user 0 -exec chown -h "$OWNER" {} + 2>/dev/null || true`,
+    'fi',
+    'exit $RC',
   ].join('\n');
 
   const args = [
     'run', '-d',
     '--name', name,
-    '--network', 'host',
+    '--network', config.deploy.dockerNetwork,
+    '-e', `BEACHHEAD_HEALTH_URL=http://${config.selfUpdate.containerName}:3000/api/health`,
     '-v', '/var/run/docker.sock:/var/run/docker.sock',
     '-v', `${repoDir}:${repoDir}`,
     '-w', repoDir,
