@@ -181,10 +181,17 @@ async function dockerComposeUpStateful(cwd, projectName, services, overrideFile)
 /**
  * Docker compose down (for cleanup / rollback).
  */
-async function dockerComposeDown(cwd, overrideFile) {
+/**
+ * `removeImages: true` adds `--rmi local`: the images Compose built for this
+ * project go with it. Only for deploys being pruned for good — a deploy that's
+ * merely stopped (the previous one after a swap) keeps its images so a
+ * rollback can start it without rebuilding.
+ */
+async function dockerComposeDown(cwd, overrideFile, { removeImages = false } = {}) {
   const args = ['compose', '-f', 'docker-compose.yml'];
   if (overrideFile) args.push('-f', overrideFile);
   args.push('down', '--remove-orphans');
+  if (removeImages) args.push('--rmi', 'local');
   await exec('docker', args, { cwd, timeout: 120000 });
 }
 
@@ -311,7 +318,15 @@ async function dockerComposeUpNoBuild(cwd, overrideFile, services = []) {
   await exec('docker', args, { cwd, timeout: 300000 });
 }
 
+/**
+ * Log rotation for containers Beachhead starts itself with `docker run`
+ * (placeholders, reverse-proxy targets, static sites, the self-updater).
+ * Same limits composeWrapper writes into app overrides.
+ */
+const RUN_LOG_OPTS = ['--log-driver', 'json-file', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3'];
+
 module.exports = {
+  RUN_LOG_OPTS,
   exec,
   gitClone,
   dockerComposeBuild,

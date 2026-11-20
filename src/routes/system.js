@@ -1,13 +1,12 @@
 const { Router } = require('express');
-const fs = require('fs');
 const os = require('os');
-const path = require('path');
 const Apps = require('../models/apps');
 const Deployments = require('../models/deployments');
 const Settings = require('../models/settings');
 const { requireAuth, requireSuperAdmin } = require('../middleware/auth');
-const { exec, dockerComposeDown, stopComposeProject } = require('../services/docker');
+const { exec } = require('../services/docker');
 const selfUpdate = require('../services/selfUpdate');
+const maintenance = require('../services/maintenance');
 const config = require('../config');
 const logger = require('../logger');
 
@@ -211,34 +210,15 @@ router.post('/prune', async (req, res) => {
     const keep = Math.max(1, parseInt(req.body.keep, 10) || 3);
     const apps = await Apps.findAll();
     let totalPruned = 0;
+    let imagesRemoved = 0;
     const details = [];
 
     for (const app of apps) {
-      const prunable = await Deployments.findPrunableByAppId(app.id, app.active_deployment_id, keep);
-      if (prunable.length === 0) continue;
-
-      for (const deployId of prunable) {
-        const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${deployId}`);
-        // Stop containers if running
-        try {
-          if (fs.existsSync(path.join(deployDir, 'beachhead.override.yml'))) {
-            await dockerComposeDown(deployDir, 'beachhead.override.yml');
-          } else {
-            await stopComposeProject(`deploy-${deployId}`);
-          }
-        } catch {
-          // best-effort — containers may already be stopped
-        }
-        // Remove deploy directory
-        if (fs.existsSync(deployDir)) {
-          fs.rmSync(deployDir, { recursive: true, force: true });
-        }
-      }
-
-      await Deployments.deleteByIds(prunable);
-      totalPruned += prunable.length;
-      details.push({ app: app.name, pruned: prunable.length });
-      logger.info(`Pruned ${prunable.length} old deployment(s) for ${app.name}`);
+      const r = await maintenance.pruneDeployments(app, keep);
+      if (r.pruned === 0) continue;
+      totalPruned += r.pruned;
+      imagesRemoved += r.imagesRemoved;
+      details.push({ app: app.name, pruned: r.pruned, imagesRemoved: r.imagesRemoved });
     }
 
     // Also prune dangling Docker images
@@ -248,7 +228,7 @@ router.post('/prune', async (req, res) => {
       // non-fatal
     }
 
-    res.json({ totalPruned, keep, details });
+    res.json({ totalPruned, imagesRemoved, keep, details });
   } catch (err) {
     logger.error('System prune failed', err);
     res.status(500).json({ error: err.message });
@@ -313,34 +293,57 @@ router.post('/apps/:id/prune', async (req, res) => {
     if (!app) return res.status(404).json({ error: 'App not found' });
 
     const keep = Math.max(1, parseInt(req.body.keep, 10) || 3);
-    const prunable = await Deployments.findPrunableByAppId(app.id, app.active_deployment_id, keep);
-
-    if (prunable.length === 0) {
+    const r = await maintenance.pruneDeployments(app, keep);
+    if (r.pruned === 0) {
       return res.json({ pruned: 0, keep, message: 'Nothing to prune' });
     }
-
-    for (const deployId of prunable) {
-      const deployDir = path.join(config.deploy.baseDir, `app-${app.id}`, `deploy-${deployId}`);
-      try {
-        if (fs.existsSync(path.join(deployDir, 'beachhead.override.yml'))) {
-          await dockerComposeDown(deployDir, 'beachhead.override.yml');
-        } else {
-          await stopComposeProject(`deploy-${deployId}`);
-        }
-      } catch {
-        // best-effort
-      }
-      if (fs.existsSync(deployDir)) {
-        fs.rmSync(deployDir, { recursive: true, force: true });
-      }
-    }
-
-    await Deployments.deleteByIds(prunable);
-    logger.info(`Pruned ${prunable.length} deployment(s) for ${app.name} (keeping ${keep})`);
-    res.json({ pruned: prunable.length, keep });
+    res.json({ pruned: r.pruned, imagesRemoved: r.imagesRemoved, keep });
   } catch (err) {
     logger.error(`Prune failed for app ${req.params.id}`, err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Disk maintenance ──
+
+/**
+ * GET /api/system/maintenance
+ * Settings, last run result, and whether this is Docker Desktop (host
+ * cleanup is skipped there).
+ */
+router.get('/maintenance', async (req, res) => {
+  try {
+    res.json(await maintenance.getStatus());
+  } catch (err) {
+    logger.error('Failed to read maintenance status', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * PUT /api/system/maintenance
+ * Body: { enabled?, keep_deploys?, host_enabled?, journal_max? }
+ */
+router.put('/maintenance', async (req, res) => {
+  try {
+    const settings = await maintenance.saveSettings(req.body || {});
+    res.json({ settings });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/system/maintenance/run
+ * Start a full pass now. Returns immediately; poll GET /maintenance until
+ * `running` is false, then read `lastResult`.
+ */
+router.post('/maintenance/run', async (req, res) => {
+  try {
+    res.status(202).json(maintenance.startRun('manual'));
+  } catch (err) {
+    logger.error('Manual maintenance run failed', err);
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 

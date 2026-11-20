@@ -373,6 +373,78 @@
       </button>
     </div>
 
+    <!-- Disk Maintenance -->
+    <div class="card" style="margin-top: 2rem;">
+      <h3 style="margin-bottom: 1rem;">Disk Maintenance</h3>
+
+      <div v-if="maintError" style="color: var(--danger); margin-bottom: 0.75rem;">{{ maintError }}</div>
+      <div v-if="maintSuccess" style="color: var(--success); margin-bottom: 0.75rem;">{{ maintSuccess }}</div>
+
+      <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">
+        Keeps this instance's disk from slowly filling. After every successful deploy, deploys beyond the
+        rollback depth are removed along with the images they built. Once a day it also removes images left
+        behind by deploys that no longer exist, dangling images and build cache older than 3 days, and on a
+        Linux VM caps the systemd journal, drops old snap revisions and clears the package cache.
+        Volumes and running containers are never touched.
+      </p>
+
+      <div v-if="maint" style="max-width: 460px;">
+        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; margin-bottom: 0.75rem;">
+          <input type="checkbox" v-model="maint.settings.enabled" />
+          Run automatically (after deploys and once a day)
+        </label>
+
+        <label>Deploys to keep per app (rollback depth)</label>
+        <input type="number" min="1" max="20" v-model.number="maint.settings.keep_deploys" style="width: 6rem;" />
+
+        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; margin: 1rem 0 0.25rem;"
+               :style="maint.dockerDesktop ? 'opacity: 0.5;' : ''">
+          <input type="checkbox" v-model="maint.settings.host_enabled" :disabled="maint.dockerDesktop" />
+          Also clean the host (journal, snap, package cache)
+        </label>
+        <p v-if="maint.dockerDesktop" style="color: var(--muted); font-size: 0.85rem; margin: 0 0 0.5rem;">
+          Not available on Docker Desktop — the host here is Docker's own VM.
+        </p>
+
+        <template v-if="!maint.dockerDesktop && maint.settings.host_enabled">
+          <label style="margin-top: 0.5rem;">Journal size cap</label>
+          <input v-model="maint.settings.journal_max" placeholder="200M" style="width: 6rem;" />
+        </template>
+      </div>
+
+      <div style="display: flex; gap: 0.75rem; margin-top: 1.5rem;">
+        <button class="btn" @click="saveMaintenance" :disabled="savingMaint || !maint">
+          {{ savingMaint ? 'Saving...' : 'Save Maintenance Settings' }}
+        </button>
+        <button class="btn btn-warning" @click="runMaintenance" :disabled="runningMaint || !maint || maint.running">
+          {{ runningMaint || (maint && maint.running) ? 'Running…' : 'Run Now' }}
+        </button>
+      </div>
+
+      <div v-if="maint && maint.lastResult" style="margin-top: 1.25rem; font-size: 0.9rem;">
+        <p style="margin: 0 0 0.5rem;">
+          <strong>Last run</strong>
+          <span style="color: var(--muted); margin-left: 0.5rem;">
+            {{ formatWhen(maint.lastRunAt) }} ({{ maint.lastResult.reason }})<span v-if="maint.nextRunAt"> · next {{ formatWhen(maint.nextRunAt) }}</span>
+          </span>
+        </p>
+        <ul style="margin: 0 0 0.75rem; padding-left: 1.25rem;">
+          <li>Deploys: <span v-if="maint.lastResult.deploys.error" style="color: var(--danger);">{{ maint.lastResult.deploys.error }}</span>
+            <span v-else>{{ maint.lastResult.deploys.pruned }} pruned, {{ maint.lastResult.deploys.imagesRemoved }} image(s) removed (keeping {{ maint.lastResult.deploys.keep }})</span></li>
+          <li>Docker: <span v-if="maint.lastResult.docker.error" style="color: var(--danger);">{{ maint.lastResult.docker.error }}</span>
+            <span v-else>{{ maint.lastResult.docker.imagesRemoved }} orphan image(s) and {{ maint.lastResult.docker.containersRemoved }} stopped container(s) from {{ maint.lastResult.docker.orphanDeploys }} old deploy(s);
+              dangling {{ maint.lastResult.docker.danglingReclaimed }}, build cache {{ maint.lastResult.docker.buildCacheReclaimed }}</span></li>
+          <li>Host: <span v-if="maint.lastResult.host.error" style="color: var(--danger);">{{ maint.lastResult.host.error }}</span>
+            <span v-else-if="maint.lastResult.host.skipped" style="color: var(--muted);">skipped — {{ maint.lastResult.host.skipped }}</span>
+            <span v-else>cleaned</span></li>
+        </ul>
+        <pre v-if="maint.lastResult.host && maint.lastResult.host.output" style="margin: 0; font-size: 0.75rem; max-height: 240px; overflow: auto;">{{ maint.lastResult.host.output }}</pre>
+      </div>
+      <p v-else-if="maint" style="color: var(--muted); font-size: 0.85rem; margin: 1rem 0 0;">
+        Hasn't run yet<span v-if="maint.settings.enabled"> — the first automatic run starts a few minutes after Beachhead boots</span>.
+      </p>
+    </div>
+
     <!-- Docker Disk Cleanup -->
     <div class="card" style="margin-top: 2rem;">
       <h3 style="margin-bottom: 1rem;">Docker Disk Cleanup</h3>
@@ -383,13 +455,22 @@
       <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">
         Runs <code>docker system prune -a</code> on this VM, removing all stopped containers,
         unused images (including old build layers), unused networks, and build cache.
-        Running containers and their images are not affected.
+        Running containers and their images are not affected. Disk Maintenance above handles routine
+        cleanup on its own — this is the heavy option.
+      </p>
+      <p style="color: var(--muted); font-size: 0.9rem; margin: 0 0 0.75rem;">
+        Paused and auto-paused apps have stopped containers, so they lose their containers and images and
+        rebuild from scratch on their next wake. Kept rollback deploys lose their images too.
       </p>
 
       <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; margin-bottom: 1rem;">
         <input type="checkbox" v-model="cleanupIncludeVolumes" />
-        Also remove unused Docker volumes (<code>--volumes</code>)
+        Also remove unused anonymous Docker volumes (<code>--volumes</code>)
       </label>
+      <p style="color: var(--muted); font-size: 0.85rem; margin: -0.5rem 0 1rem;">
+        Named volumes (every app database) are kept even when unused — remove those by hand with
+        <code>docker volume rm</code> after backing them up.
+      </p>
 
       <button class="btn btn-danger" @click="runDockerCleanup" :disabled="runningCleanup">
         {{ runningCleanup ? 'Cleaning...' : 'Run Docker Cleanup' }}
@@ -483,6 +564,11 @@ export default {
     updateError: null,
     updatePolling: false,
     updatePollTimer: null,
+    maint: null,
+    maintError: null,
+    maintSuccess: null,
+    savingMaint: false,
+    runningMaint: false,
   }),
   async mounted() {
     await this.loadUsers();
@@ -492,6 +578,7 @@ export default {
     await this.loadConstructionSettings();
     await this.loadLanSettings();
     await this.loadUpdateStatus();
+    await this.loadMaintenance();
     try {
       const status = await api.getBootstrapStatus();
       if (status.user) this.currentUserId = status.user.id;
@@ -716,6 +803,50 @@ export default {
       } finally {
         this.savingLan = false;
       }
+    },
+    async loadMaintenance() {
+      try {
+        this.maint = await api.getMaintenance();
+      } catch (e) {
+        this.maintError = e.message;
+      }
+    },
+    async saveMaintenance() {
+      this.maintError = null;
+      this.maintSuccess = null;
+      this.savingMaint = true;
+      try {
+        const { settings } = await api.saveMaintenance(this.maint.settings);
+        this.maint.settings = settings;
+        this.maintSuccess = 'Maintenance settings saved';
+      } catch (e) {
+        this.maintError = e.message;
+      } finally {
+        this.savingMaint = false;
+      }
+    },
+    async runMaintenance() {
+      this.maintError = null;
+      this.maintSuccess = null;
+      this.runningMaint = true;
+      try {
+        await api.runMaintenance();
+        // Runs in the background; poll until it reports finished.
+        for (let i = 0; i < 300; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          await this.loadMaintenance();
+          if (this.maint && !this.maint.running) break;
+        }
+        this.maintSuccess = 'Maintenance run complete';
+      } catch (e) {
+        this.maintError = e.message;
+      } finally {
+        this.runningMaint = false;
+      }
+    },
+    formatWhen(iso) {
+      if (!iso) return '';
+      return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     },
     async runDockerCleanup() {
       this.cleanupError = null;

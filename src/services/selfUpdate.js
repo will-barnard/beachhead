@@ -28,6 +28,7 @@
 const { exec } = require('./docker');
 const config = require('../config');
 const logger = require('../logger');
+const { RUN_LOG_OPTS } = require('./docker');
 
 /**
  * The host path of the beachhead checkout, discovered from Compose's own
@@ -128,7 +129,7 @@ async function startUpdate() {
   ].join('\n');
 
   const args = [
-    'run', '-d',
+    'run', '-d', ...RUN_LOG_OPTS,
     '--name', name,
     '--network', config.deploy.dockerNetwork,
     '-e', `BEACHHEAD_HEALTH_URL=http://${config.selfUpdate.containerName}:3000/api/health`,

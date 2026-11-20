@@ -1,8 +1,17 @@
+# Docker's default json-file driver never rotates. nginx-proxy logs every
+# request to stdout, so without a cap its log grows until the disk is full.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   beachhead:
     build: .
     container_name: beachhead-api
     restart: unless-stopped
+    logging: *default-logging
     expose:
       - "3000"
     ports:
@@ -55,6 +64,7 @@ services:
     image: postgres:16-alpine
     container_name: beachhead-db
     restart: unless-stopped
+    logging: *default-logging
     environment:
       - POSTGRES_USER=beachhead
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-beachhead}
@@ -73,6 +83,7 @@ services:
     image: nginxproxy/nginx-proxy:1.5
     container_name: beachhead-proxy
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "80:80"
       - "443:443"
@@ -98,6 +109,7 @@ services:
     image: nginxproxy/acme-companion:2.4
     container_name: beachhead-letsencrypt
     restart: unless-stopped
+    logging: *default-logging
     environment:
       - DEFAULT_EMAIL=${LETSENCRYPT_EMAIL:-admin@example.com}
       - NGINX_PROXY_CONTAINER=beachhead-proxy

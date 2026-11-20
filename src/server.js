@@ -10,6 +10,7 @@ const worker = require('./services/worker');
 const proxyNetwork = require('./services/proxyNetwork');
 const activityTracker = require('./services/activityTracker');
 const monitor = require('./services/monitor');
+const maintenance = require('./services/maintenance');
 
 // Routes
 const appsRouter = require('./routes/apps');
@@ -191,6 +192,11 @@ async function start() {
     // blocks startup: a monitor problem must not take deploys down with it.
     monitor.start().catch((err) => logger.error(`System monitor failed to start: ${err.message}`));
 
+    // Daily disk maintenance (old deploys, orphan images, build cache, host
+    // journal/snap/apt). First check runs a few minutes after boot, so a
+    // fresh or long-neglected instance cleans itself up on its own.
+    maintenance.start();
+
     // Start HTTP server
     app.listen(config.port, () => {
       logger.info(`Beachhead server running on port ${config.port}`);
@@ -208,6 +214,7 @@ process.on('SIGTERM', () => {
   worker.stop();
   try { activityTracker.stop(); } catch {}
   try { monitor.stop(); } catch {}
+  try { maintenance.stop(); } catch {}
   process.exit(0);
 });
 
@@ -216,6 +223,7 @@ process.on('SIGINT', () => {
   worker.stop();
   try { activityTracker.stop(); } catch {}
   try { monitor.stop(); } catch {}
+  try { maintenance.stop(); } catch {}
   process.exit(0);
 });
 

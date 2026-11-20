@@ -147,6 +147,26 @@ Samples are kept 48h raw and 30 days as 15-minute averages.
 it every minute, so if the whole machine goes down, that service emails you.
 
 
+## Disk Maintenance
+
+Every deploy builds fresh images under a new Compose project, and cloud VMs ship with
+small boot disks. Beachhead cleans up after itself so an instance doesn't slowly fill.
+Dashboard → **Settings → Disk Maintenance** (on by default).
+
+| When | What |
+|------|------|
+| After every successful deploy | Deploys beyond the rollback depth (default: keep 2) are removed with the images they built. Kept deploys keep their images, so rollback still works without a rebuild. |
+| Daily | Images and stopped containers from deploys no longer in the database (left behind by older versions), dangling images, build cache older than 3 days. |
+| Daily, Linux only | Host: systemd journal capped (default 200M), snap keeps 2 revisions and drops disabled ones, apt/dnf package cache cleared. |
+| Always | Container logs rotate at 10 MB × 3 — app overrides, Beachhead's own stack, and every container it starts with `docker run`. |
+
+Volumes and running containers are never touched; paused apps keep their containers.
+The host step runs in a short-lived privileged sidecar (`beachhead-host-maintenance`)
+that enters the host's namespaces — the same root-equivalent access the docker.sock
+mount already gives Beachhead. It's skipped on Docker Desktop, where the "host" is
+Docker's own VM. The first daily run starts ~5 minutes after Beachhead boots, so an
+existing instance cleans up its backlog as soon as it's updated.
+
 ## Deployment State Machine
 
 ```

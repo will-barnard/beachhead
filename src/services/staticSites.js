@@ -38,6 +38,7 @@ const { exec, gitClone } = require('./docker');
 const StaticSites = require('../models/staticSites');
 const config = require('../config');
 const logger = require('../logger');
+const { RUN_LOG_OPTS } = require('./docker');
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 
@@ -76,7 +77,7 @@ async function startContainer(site) {
   } catch { /* container may not exist */ }
 
   const args = [
-    'run', '-d',
+    'run', '-d', ...RUN_LOG_OPTS,
     '--name', name,
     '--restart', 'unless-stopped',
     '--network', config.deploy.dockerNetwork,

@@ -17,6 +17,8 @@ const Settings = require('../models/settings');
 const proxyNetwork = require('./proxyNetwork');
 const onDemand = require('./onDemand');
 const construction = require('./construction');
+const maintenance = require('./maintenance');
+const { RUN_LOG_OPTS } = require('./docker');
 
 const STATES = Deployments.STATES;
 const POLL_INTERVAL = 5000;
@@ -511,6 +513,10 @@ async function processDeployment(deployment) {
     await construction.syncForApp(app);
 
     logger.info(`[deploy #${deployment.id}] Deployment complete for ${app.name}`);
+
+    // Drop deploys beyond the configured rollback depth, images included.
+    // Without this every deploy left its images behind for good. Never throws.
+    await maintenance.autoPruneAfterDeploy(app);
   } catch (err) {
     logger.error(`[deploy #${deployment.id}] Failed: ${err.message}`);
 
@@ -825,7 +831,7 @@ async function startupStaticSites() {
         const hosts = site.www_redirect ? `${site.domain},www.${site.domain}` : site.domain;
         // Remove existing container if present but stopped
         try { await exec('docker', ['rm', '-f', name], { timeout: 10000 }); } catch { /* ok */ }
-        await exec('docker', ['run', '-d',
+        await exec('docker', ['run', '-d', ...RUN_LOG_OPTS,
           '--name', name,
           '--restart', 'unless-stopped',
           '--network', config.deploy.dockerNetwork,

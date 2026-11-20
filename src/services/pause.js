@@ -3,6 +3,7 @@ const path = require('path');
 const { exec } = require('./docker');
 const config = require('../config');
 const logger = require('../logger');
+const { RUN_LOG_OPTS } = require('./docker');
 
 /**
  * Per-app "pause placeholder" containers.
@@ -102,7 +103,7 @@ async function startPausePlaceholder(app) {
 
   const name = pauseContainerName(app.id);
   await exec('docker', [
-    'run', '-d',
+    'run', '-d', ...RUN_LOG_OPTS,
     '--name', name,
     '--network', config.deploy.dockerNetwork,
     '--restart', 'unless-stopped',
@@ -393,7 +394,7 @@ async function startAutoPausePlaceholder({ app, service, hosts, domain, customHt
   try { await exec('docker', ['rm', '-f', name], { timeout: 15000, silent: true }); } catch {}
 
   await exec('docker', [
-    'run', '-d',
+    'run', '-d', ...RUN_LOG_OPTS,
     '--name', name,
     '--network', config.deploy.dockerNetwork,
     '--restart', 'unless-stopped',

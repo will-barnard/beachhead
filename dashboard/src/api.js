@@ -137,6 +137,9 @@ export default {
   pruneApp: (appId, keep) => request(`/system/apps/${appId}/prune`, { method: 'POST', body: { keep } }),
   getNetworkInfo: () => request('/system/network-info'),
   dockerCleanup: (body = {}) => request('/system/docker-cleanup', { method: 'POST', body }),
+  getMaintenance: () => request('/system/maintenance'),
+  saveMaintenance: (body) => request('/system/maintenance', { method: 'PUT', body }),
+  runMaintenance: () => request('/system/maintenance/run', { method: 'POST', body: {} }),
 
   // System monitor (Health page)
   getMonitorHealth: () => request('/system/monitor/health'),
